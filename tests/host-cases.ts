@@ -86,6 +86,10 @@ export async function runHostCases() {
   check(engine.findClip(a.id)?.clip.transform?.scale === 3, 'a second zoom changes scale')
   const reportedZoom = getTimeline(engine).tracks.flatMap((track) => track.clips).find((clip) => clip.id === a.id)
   check(reportedZoom?.scale === 3, 'snapshot reports scale')
+  await applyOps(engine, coerceOps([{ op: 'set_transform', clip_id: a.id, rotation: 90 }]), 'Rotate after zoom')
+  const kept = engine.findClip(a.id)?.clip.transform
+  check(kept?.scale === 3, 'a later rotate keeps the zoom')
+  check(Math.abs((kept?.rotation ?? 0) - Math.PI / 2) < 1e-6, 'the later rotate still turns the clip')
   await applyOps(engine, coerceOps([{ op: 'set_transform', clip_id: a.id, x: 0.25, y: 0.8 }]), 'Place clip')
   const placed = engine.findClip(a.id)?.clip.transform
   check(placed?.x === 0.25 && placed?.y === 0.8 && placed?.scale === 3, 'position keeps the zoom')
