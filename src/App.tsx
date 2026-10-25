@@ -761,7 +761,7 @@ function HistoryButtons() {
         type="button"
         className="icon-btn"
         aria-label="Undo"
-        title="Undo"
+        title="Undo (Ctrl+Z)"
         disabled={!canUndo}
         onClick={undo}
       >
@@ -771,7 +771,7 @@ function HistoryButtons() {
         type="button"
         className="icon-btn"
         aria-label="Redo"
-        title="Redo"
+        title="Redo (Ctrl+Shift+Z)"
         disabled={!canRedo}
         onClick={() => engine.redo()}
       >

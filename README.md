@@ -190,6 +190,8 @@ Seconds in, frames at the edge: `Math.round(seconds * fps)`. Track names are V1,
 
 `clip_id` is a host alias so later ops can name a clip created in the same batch. `vault_id` must already be on the timeline or returned by search or similar. `set_transform` `rotation` is degrees clockwise. The host converts it to radians and applies it in the same undo step. Elah stores `transform.rotation` in radians.
 
+`set_motion` lengthens an image when its last key runs past the clip. The host raises `sourceDurationFrames` with the timeline duration. A video or audio trim still stops at the file. Extending a rotation is that motion update. `Ctrl+Z` / `⌘Z` undoes a host edit when the command field is empty; `Ctrl+Shift+Z` / `⌘Shift+Z` and `Ctrl+Y` redo.
+
 ## Elah notes
 
 `@elah/editor` 0.6.0, Apache-2.0. This repo does not fork it.

@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import patch
 
-from sense.planner import INSTRUCTIONS, TOOLS, Call, OpError, run_command, validate_ops
+from sense.planner import INSTRUCTIONS, TOOLS, Call, OpError, run_command, steer_extend_animation, validate_ops
 from sense.test_local_plan import beach_catalog, catalog, timeline
 
 
@@ -60,6 +60,9 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         for word in ("trim", "split", "move", "remove", "set_volume", "add_text", "update_text", "crossfade", "set_transform", "set_motion", "add_clip"):
             self.assertIn(word, apply_ops["description"])
         self.assertIn('{"op":"set_motion","clip_id":"...","property":"rotation","from":30,"to":60,"duration_s":3}', INSTRUCTIONS)
+        self.assertIn("extend the rotation to 8 seconds", INSTRUCTIONS)
+        self.assertIn("Do not trim it to lengthen the animation.", INSTRUCTIONS)
+        self.assertIn("Do not trim a still to lengthen an animation.", apply_ops["description"])
         spun = validate_ops([{"op": "set_motion", "clip_id": "c1", "property": "zoom", "from": "1", "to": 2, "duration_s": "3"}], set())
         self.assertEqual(spun, [{"op": "set_motion", "clip_id": "c1", "property": "scale", "keys": [{"t_s": 0.0, "value": 1.0}, {"t_s": 3.0, "value": 2.0}]}])
         keyed = validate_ops([{"op": "set_motion", "clip_id": "c1", "property": "opacity", "keys": [{"t_s": 1, "value": 0}, {"t_s": 0, "value": "1"}]}], set())
@@ -108,6 +111,7 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
             "zoom from 1 to 2 over 3s",
             "pan left while zooming",
             "fade opacity from 1 to 0",
+            "extend the rotation to 8 seconds",
         )
 
         async def search_only(contents, messages):
@@ -304,6 +308,104 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         with patch("sense.planner._choose_planner", _planner(planner)):
             result = await run_command(catalog(), body)
         self.assertEqual(result["ops"], [{"op": "set_transform", "clip_id": "c1", "rotation": 30.0}])
+
+    async def test_extend_rotation_rewrites_a_source_trim(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [{"op": "trim", "clip_id": "c1", "duration_s": 8}]})], contents, messages
+
+        body = {"command": "extend the rotation to 8 seconds", "timeline": _spinning_timeline(), "library": []}
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(catalog(), body)
+        self.assertEqual(result["ops"], [{
+            "op": "set_motion",
+            "clip_id": "c1",
+            "property": "rotation",
+            "keys": [{"t_s": 0.0, "value": 30.0}, {"t_s": 8.0, "value": 90.0}],
+        }])
+
+    async def test_plain_trim_stays_a_trim(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [{"op": "trim", "clip_id": "c1", "duration_s": 8}]})], contents, messages
+
+        body = {"command": "trim this clip to 8 seconds", "timeline": _spinning_timeline(), "library": []}
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(catalog(), body)
+        self.assertEqual(result["ops"], [{"op": "trim", "clip_id": "c1", "duration_s": 8.0}])
+
+    async def test_extend_rotation_fans_out_across_selected_stills(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [{"op": "trim", "clip_id": "other", "duration_s": 8}]})], contents, messages
+
+        timeline = _spinning_timeline()
+        timeline["tracks"][0]["clips"].append({
+            "id": "c2-engine",
+            "alias": "c2",
+            "type": "image",
+            "duration_s": 2.4,
+            "motion": {"rotation": [{"t_s": 0, "value": 0}, {"t_s": 2, "value": 45}]},
+        })
+        body = {
+            "command": "extend the rotation to 8 seconds",
+            "timeline": timeline,
+            "library": [],
+            "selected_clip_ids": ["c1", "c2"],
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(catalog(), body)
+        self.assertEqual(result["ops"], [
+            {"op": "set_motion", "clip_id": "c1", "property": "rotation", "keys": [{"t_s": 0.0, "value": 30.0}, {"t_s": 8.0, "value": 90.0}]},
+            {"op": "set_motion", "clip_id": "c2", "property": "rotation", "keys": [{"t_s": 0.0, "value": 0.0}, {"t_s": 8.0, "value": 45.0}]},
+        ])
+
+    def test_extend_animation_stretches_existing_keys(self):
+        timeline = _spinning_timeline()
+        timeline["tracks"][0]["clips"][0]["motion"]["scale"] = [{"t_s": 0, "value": 1}, {"t_s": 1, "value": 2}, {"t_s": 2, "value": 3}]
+        timeline["tracks"][0]["clips"][0]["motion"]["x"] = [{"t_s": 0, "value": 0.2}, {"t_s": 2, "value": 0.8}]
+        timeline["tracks"][0]["clips"][0]["motion"]["y"] = [{"t_s": 0, "value": 0.4}, {"t_s": 2, "value": 0.6}]
+        spun = steer_extend_animation("lengthen the spin to 8s", timeline, [{"op": "trim", "clip_id": "c1", "duration_s": 8}], [])
+        self.assertEqual(spun, [{
+            "op": "set_motion",
+            "clip_id": "c1",
+            "property": "rotation",
+            "keys": [{"t_s": 0.0, "value": 30.0}, {"t_s": 8.0, "value": 90.0}],
+        }])
+        short = steer_extend_animation(
+            "make the rotation last 8 seconds",
+            timeline,
+            [
+                {"op": "trim", "clip_id": "c1", "duration_s": 8, "in_s": 1},
+                {"op": "set_motion", "clip_id": "c1", "property": "rotation", "keys": [{"t_s": 0.0, "value": 15.0}, {"t_s": 2.0, "value": 75.0}]},
+            ],
+            [],
+        )
+        self.assertEqual(short[0], {"op": "trim", "clip_id": "c1", "duration_s": 8, "in_s": 1})
+        self.assertEqual(short[1]["keys"], [{"t_s": 0.0, "value": 15.0}, {"t_s": 8.0, "value": 75.0}])
+        animated = steer_extend_animation("extend the animation to 4 seconds", timeline, [{"op": "trim", "clip_id": "c1", "duration_s": 4}], [])
+        by_prop = {op["property"]: op["keys"] for op in animated}
+        self.assertEqual(by_prop["rotation"], [{"t_s": 0.0, "value": 30.0}, {"t_s": 4.0, "value": 90.0}])
+        self.assertEqual(by_prop["scale"], [{"t_s": 0.0, "value": 1.0}, {"t_s": 2.0, "value": 2.0}, {"t_s": 4.0, "value": 3.0}])
+        self.assertEqual(by_prop["x"], [{"t_s": 0.0, "value": 0.2}, {"t_s": 4.0, "value": 0.8}])
+        self.assertEqual(by_prop["y"][1], {"t_s": 4.0, "value": 0.6})
+        panned = steer_extend_animation("extend the pan to 3 seconds", timeline, [], ["c1"])
+        self.assertEqual([op["property"] for op in panned], ["x", "y"])
+        self.assertEqual(panned[0]["keys"][1], {"t_s": 3.0, "value": 0.8})
+        self.assertEqual(panned[1]["keys"][1], {"t_s": 3.0, "value": 0.6})
+
+
+def _spinning_timeline():
+    return {
+        "tracks": [{
+            "alias": "V1",
+            "kind": "video",
+            "clips": [{
+                "id": "c1-engine",
+                "alias": "c1",
+                "type": "image",
+                "duration_s": 2.4,
+                "motion": {"rotation": [{"t_s": 0, "value": 30}, {"t_s": 2, "value": 90}]},
+            }],
+        }],
+    }
 
 
 def _planner(planner):

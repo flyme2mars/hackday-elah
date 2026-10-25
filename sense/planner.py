@@ -56,6 +56,8 @@ set_transform rotation is an absolute angle in degrees clockwise. The host store
 
 set_motion animates one property. property is rotation, scale, x, y, or opacity. rotation is degrees clockwise. scale is the same zoom field as set_transform. x and y are stage positions from 0 to 1. opacity is from 0 to 1. Use from, to, and duration_s, or keys with t_s and value. t_s is seconds from the clip start. Send at least two keys. "rotate from 30 to 60 over 3 seconds" and "zoom from 1 to 2 over 3s" are set_motion. A pan while zooming is two set_motion ops. A static set_transform clears motion on the fields it sets.
 
+To extend a rotation, zoom, pan, or other animation to N seconds, send set_motion for that property. Keep the current from and to values and set duration_s to N. "extend the rotation to 8 seconds" is set_motion, not trim. A still or image has no extra source media. Do not trim it to lengthen the animation. The host grows the still's timeline duration to cover the motion. trim changes a video or audio in-point or out-point inside the file, and it cannot run past that file.
+
 When the prompt lists Selected clip_ids, those clips are selected. Prefer those ids for trim, set_transform, set_motion, remove, and split. Cut means split. at_s is seconds on the timeline.
 
 When trimming to a new length, send duration_s only. Omit start_s unless the user asked to move the left edge.
@@ -129,7 +131,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_ops",
-        "description": "Queue timeline edits for the host as one undo step. Call this for trim, split, move, remove, set_volume, add_text, update_text, crossfade, set_transform, set_motion, and add_clip. set_transform rotation is degrees clockwise. set_transform scale replaces the clip scale. set_transform x and y are stage positions from 0 to 1. set_motion animates rotation, scale, x, y, or opacity from one value to another. Titles use add_text on T1. Never invent op names.",
+        "description": "Queue timeline edits for the host as one undo step. Call this for trim, split, move, remove, set_volume, add_text, update_text, crossfade, set_transform, set_motion, and add_clip. set_transform rotation is degrees clockwise. set_transform scale replaces the clip scale. set_transform x and y are stage positions from 0 to 1. set_motion animates rotation, scale, x, y, or opacity from one value to another. To extend an existing animation to N seconds, send set_motion with the same endpoints and duration_s N. Do not trim a still to lengthen an animation. Titles use add_text on T1. Never invent op names.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -721,6 +723,7 @@ async def _execute(state: TurnState, call: Call) -> tuple[dict[str, Any], bytes 
             return await _transcribe(state, str(args.get("vault_id") or ""), args.get("start_s"), args.get("end_s")), None
         if name == "apply_ops":
             ops = fan_selected_ops(validate_ops(args.get("ops"), state.allow), state.selected_clip_ids)
+            ops = steer_extend_animation(state.command, state.timeline, ops, state.selected_clip_ids)
             label = args.get("label")
             state.ops = ops
             state.label = label.strip()[:80] if isinstance(label, str) and label.strip() else "Edit"
@@ -1450,9 +1453,9 @@ def _copy_optional(raw: dict[str, Any], op: dict[str, Any], numbers: tuple[str, 
 
 
 _EDIT_TOKENS = (
-    "trim", "cut", "split", "move", "remove", "delete", "rotate", "volume",
+    "trim", "cut", "split", "move", "remove", "delete", "rotate", "rotation", "volume",
     "mute", "text", "title", "caption", "subtitle", "export", "fade", "crossfade", "speed", "zoom", "scale",
-    "pan", "opacity", "animate",
+    "pan", "opacity", "animate", "animation", "extend", "lengthen", "spin",
 )
 _FIND_TOKENS = ("find", "search", "look for", "show me", "footage", "clip of", "video of")
 _SELECTION_OPS = frozenset({"trim", "set_transform", "set_motion", "remove", "split"})
@@ -1532,6 +1535,183 @@ def fan_selected_ops(ops: list[dict[str, Any]], selected: list[str]) -> list[dic
         seen.add(key)
         unique.append(op)
     return unique
+
+
+_EXTEND_ANIMATION_RE = re.compile(
+    r"\b(?:extend|lengthen|stretch|make)\b.{0,60}?\b(rotation|spin|turning|turn|animation|motion|zoom|scale|pan|opacity|fade)\b.{0,40}?\b(\d+(?:\.\d+)?)\s*(?:seconds|second|secs|sec|s)\b",
+    re.IGNORECASE,
+)
+_EXTEND_KIND = {
+    "rotation": "rotation",
+    "spin": "rotation",
+    "turn": "rotation",
+    "turning": "rotation",
+    "zoom": "scale",
+    "scale": "scale",
+    "pan": "pan",
+    "opacity": "opacity",
+    "fade": "opacity",
+    "animation": "all",
+    "motion": "all",
+}
+_MOTION_NAMES = ("rotation", "scale", "x", "y", "opacity")
+
+
+def steer_extend_animation(
+    command: str,
+    timeline: dict[str, Any],
+    ops: list[dict[str, Any]],
+    selected: list[str],
+) -> list[dict[str, Any]]:
+    """Map "extend the rotation to N seconds" onto set_motion.
+
+    A duration trim cannot lengthen a still: its source window is the placed
+    length. Keep the current endpoints and stretch the key times to N. The host
+    then grows an image, or a video out-point that still fits in the file.
+    """
+    parsed = _parse_extend_animation(command)
+    if parsed is None:
+        return ops
+    kind, duration = parsed
+    clip_ids: list[str] = []
+    for clip_id in selected:
+        if clip_id not in clip_ids:
+            clip_ids.append(clip_id)
+    if not clip_ids:
+        for op in ops:
+            clip_id = op.get("clip_id")
+            if isinstance(clip_id, str) and clip_id not in clip_ids and op.get("op") in {"trim", "set_motion", "set_transform"}:
+                clip_ids.append(clip_id)
+    if not clip_ids:
+        for clip in _iter_timeline_clips(timeline):
+            alias = clip.get("alias") if isinstance(clip.get("alias"), str) and clip.get("alias") else clip.get("id")
+            if isinstance(alias, str) and alias not in clip_ids:
+                clip_ids.append(alias)
+    motions: list[tuple[str, str, list[dict[str, float]]]] = []
+    for clip_id in clip_ids:
+        for prop in _extend_properties(kind, timeline, ops, clip_id):
+            keys = _op_motion_keys(ops, clip_id, prop) or _timeline_motion_keys(timeline, clip_id, prop)
+            if not keys:
+                continue
+            motions.append((clip_id, prop, _stretch_motion_keys(keys, duration)))
+    if not motions:
+        return ops
+    kept: list[dict[str, Any]] = []
+    for op in ops:
+        if op.get("op") == "set_motion" and any(op.get("clip_id") == clip_id and op.get("property") == prop for clip_id, prop, _keys in motions):
+            continue
+        if op.get("op") == "trim" and _matches_extend_trim(op, duration):
+            continue
+        kept.append(op)
+    for clip_id, prop, keys in motions:
+        kept.append({"op": "set_motion", "clip_id": clip_id, "property": prop, "keys": keys})
+    return kept
+
+
+def _parse_extend_animation(command: str) -> tuple[str, float] | None:
+    match = _EXTEND_ANIMATION_RE.search(command)
+    if match is None:
+        return None
+    kind = _EXTEND_KIND.get(match.group(1).lower())
+    if kind is None:
+        return None
+    duration = float(match.group(2))
+    if duration <= 0:
+        return None
+    return kind, duration
+
+
+def _extend_properties(kind: str, timeline: dict[str, Any], ops: list[dict[str, Any]], clip_id: str) -> list[str]:
+    if kind == "all":
+        names = _MOTION_NAMES
+    elif kind == "pan":
+        names = ("x", "y")
+    else:
+        names = (kind,)
+    return [name for name in names if _op_motion_keys(ops, clip_id, name) or _timeline_motion_keys(timeline, clip_id, name)]
+
+
+def _iter_timeline_clips(timeline: dict[str, Any]) -> list[dict[str, Any]]:
+    clips: list[dict[str, Any]] = []
+    tracks = timeline.get("tracks") if isinstance(timeline, dict) else None
+    if not isinstance(tracks, list):
+        return clips
+    for track in tracks:
+        if not isinstance(track, dict):
+            continue
+        rows = track.get("clips")
+        if not isinstance(rows, list):
+            continue
+        for clip in rows:
+            if isinstance(clip, dict):
+                clips.append(clip)
+    return clips
+
+
+def _clip_matches(clip: dict[str, Any], clip_id: str) -> bool:
+    return clip.get("alias") == clip_id or clip.get("id") == clip_id
+
+
+def _timeline_motion_keys(timeline: dict[str, Any], clip_id: str, prop: str) -> list[dict[str, float]] | None:
+    for clip in _iter_timeline_clips(timeline):
+        if not _clip_matches(clip, clip_id):
+            continue
+        motion = clip.get("motion")
+        if not isinstance(motion, dict):
+            return None
+        return _motion_key_rows(motion.get(prop))
+    return None
+
+
+def _op_motion_keys(ops: list[dict[str, Any]], clip_id: str, prop: str) -> list[dict[str, float]] | None:
+    found: list[dict[str, float]] | None = None
+    for op in ops:
+        if op.get("op") == "set_motion" and op.get("clip_id") == clip_id and op.get("property") == prop:
+            found = _motion_key_rows(op.get("keys")) or found
+    return found
+
+
+def _motion_key_rows(raw: object) -> list[dict[str, float]] | None:
+    if not isinstance(raw, list) or len(raw) < 2:
+        return None
+    keys: list[dict[str, float]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            return None
+        t_s = item.get("t_s", item.get("t"))
+        value = item.get("value")
+        if isinstance(t_s, bool) or isinstance(value, bool):
+            return None
+        if not isinstance(t_s, (int, float)) or not isinstance(value, (int, float)):
+            return None
+        keys.append({"t_s": float(t_s), "value": float(value)})
+    keys.sort(key=lambda key: key["t_s"])
+    return keys
+
+
+def _stretch_motion_keys(keys: list[dict[str, float]], duration: float) -> list[dict[str, float]]:
+    ordered = sorted(keys, key=lambda key: key["t_s"])
+    last = ordered[-1]["t_s"]
+    if last <= 0 or abs(last - duration) < 1e-9:
+        stretched = [{"t_s": key["t_s"], "value": key["value"]} for key in ordered]
+        stretched[-1]["t_s"] = duration
+        return stretched
+    scale = duration / last
+    stretched = [{"t_s": key["t_s"] * scale, "value": key["value"]} for key in ordered]
+    stretched[-1]["t_s"] = duration
+    return stretched
+
+
+def _matches_extend_trim(op: dict[str, Any], duration: float) -> bool:
+    if op.get("op") != "trim" or "in_s" in op:
+        return False
+    start = op.get("start_s")
+    if start not in (None, 0, 0.0):
+        return False
+    span = op.get("duration_s")
+    if isinstance(span, bool) or not isinstance(span, (int, float)):
+        return False
+    return abs(float(span) - duration) < 1e-6
 
 
 def _req_str(raw: dict[str, Any], key: str) -> str:
