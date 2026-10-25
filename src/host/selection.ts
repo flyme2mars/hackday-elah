@@ -1,6 +1,6 @@
 import { selectionStore, type TimelineEngine } from '@elah/editor'
 
-/** Stable host boundary for future command context; excludes removed clips. */
+/** Elah selection-set insertion order. A modifier-click appends. Removed clips are left out. */
 export function getSelectedClipIds(engine: TimelineEngine): string[] {
   return [...selectionStore.getState().selectedClipIds].filter((id) =>
     engine.findClip(id),

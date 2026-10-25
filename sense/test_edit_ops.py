@@ -8,6 +8,7 @@ from sense.planner import (
     Call,
     OpError,
     fan_selected_ops,
+    ordinal_clip_id,
     run_command,
     steer_extend_animation,
     stitch_created_aliases,
@@ -71,6 +72,12 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn(word, apply_ops["description"])
         self.assertIn('{"op":"set_motion","clip_id":"...","property":"rotation","from":30,"to":60,"duration_s":3}', INSTRUCTIONS)
         self.assertIn("extend the rotation to 8 seconds", INSTRUCTIONS)
+        self.assertIn("Selected clip_ids in order: 1=<id>, 2=<id>", INSTRUCTIONS)
+        self.assertIn("the first one rotate for 3 seconds", INSTRUCTIONS)
+        self.assertIn("the second one extend", INSTRUCTIONS)
+        self.assertIn("the third trim to 2 seconds", INSTRUCTIONS)
+        for phrase in ("first", "second", "third", "1st", "2nd", "3rd", "#1", "#2", "the first selected", "clip 1"):
+            self.assertIn(phrase, INSTRUCTIONS)
         self.assertIn("Do not trim it to lengthen the animation.", INSTRUCTIONS)
         self.assertIn("Do not trim a still to lengthen an animation.", apply_ops["description"])
         spun = validate_ops([{"op": "set_motion", "clip_id": "c1", "property": "zoom", "from": "1", "to": 2, "duration_s": "3"}], set())
@@ -216,7 +223,7 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         }
         with patch("sense.planner._choose_planner", _planner(planner)):
             result = await run_command(beach_catalog(), body)
-        self.assertIn("Selected clip_ids: c1", seen["prompt"])
+        self.assertIn("Selected clip_ids in order: 1=c1", seen["prompt"])
         by_op = {op["op"]: op for op in result["ops"]}
         self.assertEqual(by_op["trim"]["clip_id"], "c1")
         self.assertEqual(by_op["set_transform"]["clip_id"], "c1")
@@ -409,6 +416,7 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(panned[0]["keys"][1], {"t_s": 3.0, "value": 0.8})
         self.assertEqual(panned[1]["keys"][1], {"t_s": 3.0, "value": 0.6})
 
+
     def test_prompt_shows_hello_world_rotation_on_one_clip_id(self):
         self.assertIn(
             '{"op":"add_text","clip_id":"text_hello_world","content":"Hello World","track":"T1","start_s":0,"duration_s":10}',
@@ -573,6 +581,181 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
             result = await run_command(catalog(), body)
         self.assertNotIn("clip_id", result["ops"][0])
         self.assertEqual(result["ops"][1]["clip_id"], "c1")
+
+    def test_ordinal_phrases_map_onto_selection_order(self):
+        selected = ["alpha", "beta", "gamma"]
+        expected = {
+            "first": "alpha",
+            "the first one": "alpha",
+            "the first selected": "alpha",
+            "1st": "alpha",
+            "#1": "alpha",
+            "clip 1": "alpha",
+            "second": "beta",
+            "2nd": "beta",
+            "#2": "beta",
+            "clip 2": "beta",
+            "third": "gamma",
+            "3rd": "gamma",
+            "#3": "gamma",
+            "clip 3": "gamma",
+        }
+        for phrase, clip_id in expected.items():
+            with self.subTest(phrase=phrase):
+                self.assertEqual(ordinal_clip_id(selected, phrase), clip_id)
+        self.assertIsNone(ordinal_clip_id(selected, "rotate all selected 90"))
+        self.assertIsNone(ordinal_clip_id(selected, "first and second"))
+
+    async def test_prompt_lists_selected_clips_in_selection_order(self):
+        seen = {}
+
+        async def planner(contents, messages):
+            seen["prompt"] = messages[1]["content"]
+            return [], contents, messages
+
+        body = {
+            "command": "rotate all selected 90",
+            "timeline": timeline(),
+            "library": [],
+            "selected_clip_ids": ["c3", "c1", "c2"],
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            await run_command(catalog(), body)
+        self.assertIn("Selected clip_ids in order: 1=c3, 2=c1, 3=c2", seen["prompt"])
+
+    async def test_mixed_ordinal_command_keeps_distinct_ops(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [
+                {"op": "set_motion", "clip_id": "c1", "property": "rotation", "from": 0, "to": 90, "duration_s": 3},
+                {"op": "set_motion", "clip_id": "c2", "property": "rotation", "from": 10, "to": 40, "duration_s": 8},
+                {"op": "trim", "clip_id": "c3", "duration_s": 2},
+            ]})], contents, messages
+
+        body = {
+            "command": "first rotate for 3 seconds, second extend the rotation to 8 seconds, third trim to 2 seconds",
+            "timeline": _three_spinning_clips(),
+            "library": [],
+            "selected_clip_ids": ["c1", "c2", "c3"],
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(catalog(), body)
+        self.assertEqual(result["ops"], [
+            {"op": "set_motion", "clip_id": "c1", "property": "rotation", "keys": [{"t_s": 0.0, "value": 0.0}, {"t_s": 3.0, "value": 90.0}]},
+            {"op": "set_motion", "clip_id": "c2", "property": "rotation", "keys": [{"t_s": 0.0, "value": 10.0}, {"t_s": 8.0, "value": 40.0}]},
+            {"op": "trim", "clip_id": "c3", "duration_s": 2.0},
+        ])
+
+    async def test_ordinal_tokens_resolve_without_fanning(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [
+                {"op": "set_motion", "clip_id": "1st", "property": "rotation", "from": 0, "to": 90, "duration_s": 3},
+                {"op": "set_motion", "clip_id": "the second one", "property": "rotation", "from": 10, "to": 40, "duration_s": 8},
+                {"op": "trim", "clip_id": "clip 3", "duration_s": 2},
+            ]})], contents, messages
+
+        body = {
+            "command": "the first one rotate for 3 seconds, the second one extend the rotation to 8 seconds, the third trim to 2 seconds",
+            "timeline": _three_spinning_clips(),
+            "library": [],
+            "selected_clip_ids": ["c1", "c2", "c3"],
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(catalog(), body)
+        self.assertEqual([op["clip_id"] for op in result["ops"]], ["c1", "c2", "c3"])
+        self.assertEqual(result["ops"][0]["keys"][1], {"t_s": 3.0, "value": 90.0})
+        self.assertEqual(result["ops"][1]["keys"][1], {"t_s": 8.0, "value": 40.0})
+        self.assertEqual(result["ops"][2], {"op": "trim", "clip_id": "c3", "duration_s": 2.0})
+
+    def test_ordinal_batch_does_not_fan_and_uniform_batch_does(self):
+        selected = ["c1", "c2", "c3"]
+        mixed = fan_selected_ops(
+            [
+                {"op": "set_transform", "clip_id": "c1", "rotation": 15},
+                {"op": "trim", "clip_id": "c2", "duration_s": 2},
+            ],
+            selected,
+            "edit the selected clips",
+        )
+        self.assertEqual(mixed, [
+            {"op": "set_transform", "clip_id": "c1", "rotation": 15},
+            {"op": "trim", "clip_id": "c2", "duration_s": 2},
+        ])
+        uniform = fan_selected_ops(
+            [{"op": "set_transform", "clip_id": "c1", "rotation": 90}],
+            selected,
+            "rotate all selected 90",
+        )
+        self.assertEqual(uniform, [
+            {"op": "set_transform", "clip_id": "c1", "rotation": 90},
+            {"op": "set_transform", "clip_id": "c2", "rotation": 90},
+            {"op": "set_transform", "clip_id": "c3", "rotation": 90},
+        ])
+        partial = fan_selected_ops(
+            [
+                {"op": "set_transform", "clip_id": "c1", "rotation": 90},
+                {"op": "set_transform", "clip_id": "c2", "rotation": 90},
+            ],
+            selected,
+            "rotate all selected 90",
+        )
+        self.assertEqual(partial, uniform)
+        named = fan_selected_ops(
+            [
+                {"op": "set_motion", "clip_id": "#1", "property": "rotation", "duration_s": 3},
+                {"op": "trim", "clip_id": "2nd", "duration_s": 2},
+            ],
+            selected,
+            "first rotate for 3 seconds, second trim to 2 seconds",
+        )
+        self.assertEqual([op["clip_id"] for op in named], ["c1", "c2"])
+        held = fan_selected_ops(
+            [{"op": "set_transform", "clip_id": "c1", "rotation": 90}],
+            selected,
+            "the first one rotate 90",
+        )
+        self.assertEqual(held, [{"op": "set_transform", "clip_id": "c1", "rotation": 90}])
+
+    async def test_rotate_all_selected_still_fans(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [{"op": "set_transform", "clip_id": "c1", "rotation": 90}]})], contents, messages
+
+        body = {
+            "command": "rotate all selected 90",
+            "timeline": timeline(),
+            "library": [],
+            "selected_clip_ids": ["c1", "c2", "c3"],
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(catalog(), body)
+        self.assertEqual(result["ops"], [
+            {"op": "set_transform", "clip_id": "c1", "rotation": 90.0},
+            {"op": "set_transform", "clip_id": "c2", "rotation": 90.0},
+            {"op": "set_transform", "clip_id": "c3", "rotation": 90.0},
+        ])
+
+    async def test_ordinal_extend_does_not_rewrite_the_other_clips(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [
+                {"op": "set_motion", "clip_id": "c1", "property": "rotation", "from": 0, "to": 90, "duration_s": 3},
+                {"op": "trim", "clip_id": "c2", "duration_s": 8},
+                {"op": "trim", "clip_id": "c3", "duration_s": 2},
+            ]})], contents, messages
+
+        body = {
+            "command": "first rotate for 3 seconds, second extend the rotation to 8 seconds, third trim to 2 seconds",
+            "timeline": _three_spinning_clips(),
+            "library": [],
+            "selected_clip_ids": ["c1", "c2", "c3"],
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(catalog(), body)
+        by_id = {op["clip_id"]: op for op in result["ops"]}
+        self.assertEqual(set(by_id), {"c1", "c2", "c3"})
+        self.assertEqual(by_id["c1"]["keys"][1]["t_s"], 3.0)
+        self.assertEqual(by_id["c2"]["op"], "set_motion")
+        self.assertEqual(by_id["c2"]["keys"], [{"t_s": 0.0, "value": 30.0}, {"t_s": 8.0, "value": 90.0}])
+        self.assertEqual(by_id["c3"], {"op": "trim", "clip_id": "c3", "duration_s": 2.0})
+
 
     def test_invented_layout_names_become_set_transform(self):
         timeline = _clip_timeline(scale=2, x=0.4, y=0.7)
@@ -742,6 +925,27 @@ def _rotation(clip_id, seconds=10.0):
         "property": "rotation",
         "keys": [{"t_s": 0.0, "value": 0.0}, {"t_s": float(seconds), "value": 360.0}],
     }
+
+
+def _three_spinning_clips():
+    timeline = _spinning_timeline()
+    timeline["tracks"][0]["clips"].extend([
+        {
+            "id": "c2-engine",
+            "alias": "c2",
+            "type": "image",
+            "duration_s": 2.4,
+            "motion": {"rotation": [{"t_s": 0, "value": 30}, {"t_s": 2, "value": 90}]},
+        },
+        {
+            "id": "c3-engine",
+            "alias": "c3",
+            "type": "image",
+            "duration_s": 2.4,
+            "motion": {"rotation": [{"t_s": 0, "value": 0}, {"t_s": 2, "value": 45}]},
+        },
+    ])
+    return timeline
 
 
 def _spinning_timeline():

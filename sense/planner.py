@@ -60,7 +60,9 @@ set_motion animates one property. property is rotation, scale, x, y, or opacity.
 
 To extend a rotation, zoom, pan, or other animation to N seconds, send set_motion for that property. Keep the current from and to values and set duration_s to N. "extend the rotation to 8 seconds" is set_motion, not trim. A still or image has no extra source media. Do not trim it to lengthen the animation. The host grows the still's timeline duration to cover the motion. trim changes a video or audio in-point or out-point inside the file, and it cannot run past that file.
 
-When the prompt lists Selected clip_ids, those clips are selected. Prefer those ids for trim, set_transform, set_motion, remove, and split. Cut alone means split. at_s is seconds on the timeline. When the prompt lists a Playhead time, "here" is that time.
+When the prompt lists Selected clip_ids in order: 1=<id>, 2=<id>, those clips are selected. 1 is the first clip selected. Each later number is the next clip selected. That is selection order, not timeline order. Prefer those ids for trim, set_transform, set_motion, remove, and split. Map "first", "second", and "third", "1st", "2nd", and "3rd", "#1" and "#2", "the first selected", and "clip 1" to those numbers. Use the id for that number. Different edits in one command are different ops in one apply_ops batch, in the order the user stated. Do not copy one edit onto every selected clip when the user named different ordinals.
+
+Three selected clips and "the first one rotate for 3 seconds, the second one extend the rotation to 8 seconds, the third trim to 2 seconds" is one batch. Ordinal 1 is set_motion rotation for 3 seconds. Ordinal 2 is set_motion that extends that clip's rotation to 8 seconds and keeps its from and to. Ordinal 3 is trim with duration_s 2. "rotate all selected 90" is one set_transform on every selected id. "extend the rotation to 8 seconds" with no ordinal still covers every selected clip that already rotates. Cut alone means split. at_s is seconds on the timeline. When the prompt lists a Playhead time, "here" is that time.
 
 "split the video here and delete the right part", "cut here and delete the right", "split and keep the left", and "remove everything after the cut" are two ops in this order: split at the playhead, then remove only the new right half.
 {"op":"split","clip_id":"...","at_s":1.5,"right_id":"right-half"}
@@ -441,8 +443,11 @@ def _prompt(state: TurnState, command: str) -> str:
     timeline = json.dumps(_compact_timeline(state.timeline), ensure_ascii=True)
     selected = ""
     if state.selected_clip_ids:
-        joined = ", ".join(state.selected_clip_ids)
-        selected = f"\nSelected clip_ids: {joined}. Prefer these ids for trim, rotate, motion, remove, and split."
+        selected = (
+            f"\n{selection_roster_line(state.selected_clip_ids)}. "
+            "Order is selection order, the order the clips were selected, not timeline order. "
+            "Prefer these ids for trim, rotate, motion, remove, and split."
+        )
     playhead = ""
     if state.playhead_s is not None:
         playhead = f"\nPlayhead: {state.playhead_s:.3f}s. Use this for \"here\"."
@@ -753,6 +758,7 @@ async def _execute(state: TurnState, call: Call) -> tuple[dict[str, Any], bytes 
                     state.selected_clip_ids,
                 ),
                 state.selected_clip_ids,
+                state.command,
             )
             ops = steer_extend_animation(state.command, state.timeline, ops, state.selected_clip_ids)
             ops = stitch_created_aliases(ops, state.timeline)
@@ -2224,22 +2230,129 @@ def _selected_ids(body: dict[str, Any]) -> list[str]:
     return ids
 
 
-def fan_selected_ops(ops: list[dict[str, Any]], selected: list[str]) -> list[dict[str, Any]]:
-    """Copy selection ops onto every selected id when several clips are selected.
+_WORD_ORDINALS = {
+    "first": 1,
+    "second": 2,
+    "third": 3,
+    "fourth": 4,
+    "fifth": 5,
+    "sixth": 6,
+    "seventh": 7,
+    "eighth": 8,
+    "ninth": 9,
+    "tenth": 10,
+}
+_ORDINAL_RE = re.compile(
+    r"\b(?:the\s+)?(?P<word>first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?:\s+(?:one|selected))?\b"
+    r"|#\s*(?P<hash>\d+)\b"
+    r"|\b(?P<suffix>\d+)(?:st|nd|rd|th)\b"
+    r"|\bclip\s+(?P<clip>\d+)\b",
+    re.IGNORECASE,
+)
+
+
+def selection_roster_line(selected: list[str]) -> str:
+    body = ", ".join(f"{index}={clip_id}" for index, clip_id in enumerate(selected, start=1))
+    return f"Selected clip_ids in order: {body}"
+
+
+def ordinal_clip_id(selected: list[str], text: str) -> str | None:
+    """Map one ordinal phrase onto the roster. Selection order is the roster order."""
+    number = _ordinal_token(text, bare_digit=False)
+    if number is None or number > len(selected):
+        return None
+    return selected[number - 1]
+
+
+def command_names_ordinals(command: str) -> bool:
+    return _ORDINAL_RE.search(command) is not None
+
+
+def _ordinal_value(match: re.Match[str]) -> int | None:
+    word = match.group("word")
+    if word:
+        return _WORD_ORDINALS[word.lower()]
+    raw = match.group("hash") or match.group("suffix") or match.group("clip")
+    if raw is None:
+        return None
+    number = int(raw)
+    if number < 1:
+        return None
+    return number
+
+
+def _ordinal_token(text: str, *, bare_digit: bool) -> int | None:
+    stripped = text.strip()
+    if bare_digit and stripped.isdigit():
+        number = int(stripped)
+        return number if number >= 1 else None
+    matches = list(_ORDINAL_RE.finditer(stripped))
+    if len(matches) != 1 or matches[0].group(0) != stripped:
+        return None
+    return _ordinal_value(matches[0])
+
+
+def _rewrite_roster_clip_id(op: dict[str, Any], selected: list[str], ordinal_command: bool) -> dict[str, Any]:
+    clip_id = op.get("clip_id")
+    if not isinstance(clip_id, str) or clip_id in selected:
+        return op
+    number = _ordinal_token(clip_id, bare_digit=ordinal_command)
+    if number is None or number > len(selected):
+        return op
+    return {**op, "clip_id": selected[number - 1]}
+
+
+def _batch_is_per_clip(ops: list[dict[str, Any]], selected: list[str]) -> bool:
+    chosen = set(selected)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for op in ops:
+        if op.get("op") not in _SELECTION_OPS:
+            continue
+        clip_id = op.get("clip_id")
+        if not isinstance(clip_id, str) or clip_id not in chosen:
+            continue
+        payload = {key: value for key, value in op.items() if key != "clip_id"}
+        grouped.setdefault(clip_id, []).append(payload)
+    if len(grouped) < 2:
+        return False
+    signatures = {json.dumps(rows, sort_keys=True, separators=(",", ":")) for rows in grouped.values()}
+    return len(signatures) > 1
+
+
+def _dedupe_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for op in ops:
+        key = json.dumps(op, sort_keys=True, separators=(",", ":"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(op)
+    return unique
+
+
+def fan_selected_ops(ops: list[dict[str, Any]], selected: list[str], command: str = "") -> list[dict[str, Any]]:
+    """Copy one shared selection edit onto every selected id.
 
     One selected id keeps the miss-only rule: rewrite a foreign clip_id, and
     leave an id that is already selected alone. Two or more selected ids also
-    rewrite an op that already names one of them. move is never copied.
-    A remove of a split's left_id or right_id stays on that half. Rewriting it
-    to the parent clip deletes both halves.
+    rewrite an op that already names one of them, unless the command names
+    ordinals or the batch already gives those clips different edits. move is
+    never copied. Ordinal clip ids such as "2nd" or "clip 1" become roster ids
+    before that choice. A remove of a split's left_id or right_id stays on that
+    half. Rewriting it to the parent clip deletes both halves.
     """
     if not selected:
         return ops
+    ordinal_command = command_names_ordinals(command)
+    named = [_rewrite_roster_clip_id(op, selected, ordinal_command) for op in ops]
+    if len(selected) >= 2 and (ordinal_command or _batch_is_per_clip(named, selected)):
+        return _dedupe_ops(named)
     chosen = set(selected)
     multi = len(selected) >= 2
-    side_ids = _split_side_ids(ops)
+    side_ids = _split_side_ids(named)
     rewritten: list[dict[str, Any]] = []
-    for op in ops:
+    for op in named:
         name = op.get("op")
         clip_id = op.get("clip_id")
         if isinstance(clip_id, str) and clip_id in side_ids:
@@ -2247,7 +2360,7 @@ def fan_selected_ops(ops: list[dict[str, Any]], selected: list[str]) -> list[dic
                 rewritten.append(op)
                 continue
             for target in selected:
-                rewritten.append({**op, "clip_id": _fanned_side_id(ops, clip_id, target)})
+                rewritten.append({**op, "clip_id": _fanned_side_id(named, clip_id, target)})
             continue
         if name not in _SELECTION_OPS or not isinstance(clip_id, str) or (clip_id in chosen and not multi):
             rewritten.append(op)
@@ -2260,15 +2373,7 @@ def fan_selected_ops(ops: list[dict[str, Any]], selected: list[str]) -> list[dic
                     if isinstance(current, str) and current in side_ids:
                         cloned[key] = f"{target}__{label}"
             rewritten.append(cloned)
-    unique: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for op in rewritten:
-        key = json.dumps(op, sort_keys=True, separators=(",", ":"))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(op)
-    return unique
+    return _dedupe_ops(rewritten)
 
 
 _CREATE_OPS = frozenset({"add_text", "add_clip"})
@@ -2430,6 +2535,42 @@ _EXTEND_KIND = {
 _MOTION_NAMES = ("rotation", "scale", "x", "y", "opacity")
 
 
+def _ordinal_for_extend_clause(command: str) -> int | None:
+    match = _EXTEND_ANIMATION_RE.search(command)
+    if match is None:
+        return None
+    start = match.start()
+    clause_start = max(command.rfind(",", 0, start), command.rfind(";", 0, start)) + 1
+    ends = [pos for pos in (command.find(",", match.end()), command.find(";", match.end())) if pos != -1]
+    clause_end = min(ends) if ends else len(command)
+    clause = command[clause_start:clause_end]
+    anchor = start - clause_start
+    best: tuple[int, int] | None = None
+    for found in _ORDINAL_RE.finditer(clause):
+        number = _ordinal_value(found)
+        if number is None:
+            continue
+        distance = abs(found.start() - anchor)
+        if best is None or distance < best[0]:
+            best = (distance, number)
+    if best is None:
+        return None
+    return best[1]
+
+
+def _ordinal_extend_ids(command: str, selected: list[str]) -> list[str] | None:
+    """Limit an extend to one roster clip when the command names ordinals.
+
+    None keeps the uniform path, which still covers every selected clip.
+    """
+    if _parse_extend_animation(command) is None or len(selected) < 2 or not command_names_ordinals(command):
+        return None
+    ordinal = _ordinal_for_extend_clause(command)
+    if ordinal is None or ordinal > len(selected):
+        return []
+    return [selected[ordinal - 1]]
+
+
 def steer_extend_animation(
     command: str,
     timeline: dict[str, Any],
@@ -2446,20 +2587,24 @@ def steer_extend_animation(
     if parsed is None:
         return ops
     kind, duration = parsed
+    scoped = _ordinal_extend_ids(command, selected)
     clip_ids: list[str] = []
-    for clip_id in selected:
-        if clip_id not in clip_ids:
-            clip_ids.append(clip_id)
-    if not clip_ids:
-        for op in ops:
-            clip_id = op.get("clip_id")
-            if isinstance(clip_id, str) and clip_id not in clip_ids and op.get("op") in {"trim", "set_motion", "set_transform"}:
+    if scoped is None:
+        for clip_id in selected:
+            if clip_id not in clip_ids:
                 clip_ids.append(clip_id)
-    if not clip_ids:
-        for clip in _iter_timeline_clips(timeline):
-            alias = clip.get("alias") if isinstance(clip.get("alias"), str) and clip.get("alias") else clip.get("id")
-            if isinstance(alias, str) and alias not in clip_ids:
-                clip_ids.append(alias)
+        if not clip_ids:
+            for op in ops:
+                clip_id = op.get("clip_id")
+                if isinstance(clip_id, str) and clip_id not in clip_ids and op.get("op") in {"trim", "set_motion", "set_transform"}:
+                    clip_ids.append(clip_id)
+        if not clip_ids:
+            for clip in _iter_timeline_clips(timeline):
+                alias = clip.get("alias") if isinstance(clip.get("alias"), str) and clip.get("alias") else clip.get("id")
+                if isinstance(alias, str) and alias not in clip_ids:
+                    clip_ids.append(alias)
+    else:
+        clip_ids = scoped
     motions: list[tuple[str, str, list[dict[str, float]]]] = []
     for clip_id in clip_ids:
         for prop in _extend_properties(kind, timeline, ops, clip_id):
@@ -2469,15 +2614,37 @@ def steer_extend_animation(
             motions.append((clip_id, prop, _stretch_motion_keys(keys, duration)))
     if not motions:
         return ops
+    by_clip: dict[str, list[tuple[str, list[dict[str, float]]]]] = {}
+    for clip_id, prop, keys in motions:
+        by_clip.setdefault(clip_id, []).append((prop, keys))
+    placed: set[tuple[str, str]] = set()
     kept: list[dict[str, Any]] = []
     for op in ops:
-        if op.get("op") == "set_motion" and any(op.get("clip_id") == clip_id and op.get("property") == prop for clip_id, prop, _keys in motions):
-            continue
-        if op.get("op") == "trim" and _matches_extend_trim(op, duration):
+        clip_id = op.get("clip_id") if isinstance(op.get("clip_id"), str) else None
+        rows = by_clip.get(clip_id, []) if clip_id is not None else []
+        if op.get("op") == "set_motion" and rows:
+            prop = op.get("property")
+            replacement = next((keys for name, keys in rows if name == prop), None)
+            if replacement is not None and clip_id is not None and isinstance(prop, str):
+                token = (clip_id, prop)
+                if token not in placed:
+                    kept.append({"op": "set_motion", "clip_id": clip_id, "property": prop, "keys": replacement})
+                    placed.add(token)
+                continue
+        if op.get("op") == "trim" and clip_id in by_clip and _matches_extend_trim(op, duration):
+            for prop, keys in rows:
+                token = (clip_id, prop)
+                if token in placed:
+                    continue
+                kept.append({"op": "set_motion", "clip_id": clip_id, "property": prop, "keys": keys})
+                placed.add(token)
             continue
         kept.append(op)
-    for clip_id, prop, keys in motions:
-        kept.append({"op": "set_motion", "clip_id": clip_id, "property": prop, "keys": keys})
+    for clip_id, rows in by_clip.items():
+        for prop, keys in rows:
+            if (clip_id, prop) in placed:
+                continue
+            kept.append({"op": "set_motion", "clip_id": clip_id, "property": prop, "keys": keys})
     return kept
 
 
