@@ -284,9 +284,39 @@ try {
       fullPage: true,
     })
   }
+  await page.setViewportSize({ width: 1440, height: 900 })
+  hits = {
+    audio: [
+      {
+        vault_id: 'bed.m4a',
+        name: 'Bed',
+        kind: 'audio',
+        duration_s: 8,
+        src: '/samples/bed.m4a',
+      },
+    ],
+  }
+  ops = []
+  await input.fill('find bed audio')
+  await input.press('Enter')
+  await page.locator('.media-search').getByRole('button', { name: /^Bed/ }).waitFor()
+  await page.waitForFunction(() => {
+    const button = [...document.querySelectorAll('.media-search button.hit')].find((node) => node.textContent?.includes('Bed'))
+    return button instanceof HTMLElement && button.draggable
+  })
+  const libraryCount = await page.locator('.item-count').innerText()
+  await page.locator('.media-search').getByRole('button', { name: /^Bed/ }).dragTo(page.locator('.media-head'))
+  assert.equal(await page.locator('.item-count').innerText(), libraryCount)
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Bed/ }).count(), 0)
+  await page.locator('.media-search').getByRole('button', { name: /^Bed/ }).dragTo(page.locator('[data-track-kind="audio"]').first())
+  await page.locator('.media-library').getByRole('button', { name: /^Bed/ }).waitFor()
+  assert.equal(Number(await page.locator('.item-count').innerText()), Number(libraryCount) + 1)
+  await page.locator('.media-library').getByRole('button', { name: /^Bed/ }).dragTo(page.locator('[data-track-kind="audio"]').first())
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Bed/ }).count(), 1)
+  assert.equal(Number(await page.locator('.item-count').innerText()), Number(libraryCount) + 1)
   assert.deepEqual(errors, [])
   console.log(
-    'UI passed: multi-select, zoom/scrub persistence, clip/transition collision handling, dismissal, desktop/laptop/mobile overflow',
+    'UI passed: multi-select, zoom/scrub persistence, clip/transition collision handling, dismissal, desktop/laptop/mobile overflow, drag into library',
   )
 } finally {
   await browser.close()

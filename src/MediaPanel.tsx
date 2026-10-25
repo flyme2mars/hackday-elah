@@ -7,7 +7,6 @@ import {
   FolderOpen,
 } from 'lucide-react'
 import type { LibraryAsset, LibraryKind } from './host/library.ts'
-import { writeMediaDrag } from './host/media.ts'
 
 const KINDS: { kind: LibraryKind; label: string }[] = [
   { kind: 'video', label: 'Video' },
@@ -21,6 +20,8 @@ interface MediaPanelProps {
   readyIds: ReadonlyMap<string, string>
   onPlace: (asset: LibraryAsset) => void
   onPrepare: (asset: LibraryAsset) => void
+  onDragAsset: (data: DataTransfer, asset: LibraryAsset, assetId: string) => void
+  onDragAssetEnd: (assetId: string) => void
   onUpload: (files: File[]) => void
 }
 
@@ -30,6 +31,8 @@ export default function MediaPanel({
   readyIds,
   onPlace,
   onPrepare,
+  onDragAsset,
+  onDragAssetEnd,
   onUpload,
 }: MediaPanelProps) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -80,6 +83,8 @@ export default function MediaPanel({
             readyIds={readyIds}
             onPlace={onPlace}
             onPrepare={onPrepare}
+            onDragAsset={onDragAsset}
+            onDragAssetEnd={onDragAssetEnd}
           />
         </section>
         {results !== null && (
@@ -93,6 +98,8 @@ export default function MediaPanel({
                 readyIds={readyIds}
                 onPlace={onPlace}
                 onPrepare={onPrepare}
+                onDragAsset={onDragAsset}
+                onDragAssetEnd={onDragAssetEnd}
               />
             ) : (
               <p className="quiet">No matches in the library.</p>
@@ -109,11 +116,15 @@ function KindSections({
   readyIds,
   onPlace,
   onPrepare,
+  onDragAsset,
+  onDragAssetEnd,
 }: {
   items: readonly LibraryAsset[]
   readyIds: ReadonlyMap<string, string>
   onPlace: (asset: LibraryAsset) => void
   onPrepare: (asset: LibraryAsset) => void
+  onDragAsset: (data: DataTransfer, asset: LibraryAsset, assetId: string) => void
+  onDragAssetEnd: (assetId: string) => void
 }) {
   return (
     <>
@@ -148,7 +159,11 @@ function KindSections({
                       event.preventDefault()
                       return
                     }
-                    writeMediaDrag(event.dataTransfer, item, assetId)
+                    onDragAsset(event.dataTransfer, item, assetId)
+                  }}
+                  onDragEnd={() => {
+                    const assetId = readyIds.get(item.vaultId)
+                    if (assetId) onDragAssetEnd(assetId)
                   }}
                 >
                   <Thumb item={item} />

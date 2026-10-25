@@ -150,6 +150,31 @@ try {
   await page.waitForFunction(() => !document.querySelector('.command-input').disabled)
   assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Flower/ }).count(), 1)
   assert.equal(await page.locator('.item-count').innerText(), '3')
+  const toneHit = { vault_id: 'tone.m4a', name: 'Tone', kind: 'audio', duration_s: 8, src: '/samples/bed.m4a' }
+  await command('find tone', [], { hits: { audio: [toneHit] } })
+  const toneButton = page.locator('.media-search').getByRole('button', { name: /^Tone/ })
+  await toneButton.waitFor()
+  await page.waitForFunction(() => {
+    const button = [...document.querySelectorAll('.media-search button.hit')].find((node) => node.textContent?.includes('Tone'))
+    return button instanceof HTMLElement && button.draggable
+  })
+  await toneButton.dragTo(page.locator('.media-head'))
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Tone/ }).count(), 0)
+  assert.equal(await page.locator('.item-count').innerText(), '3')
+  const audioBefore = await page.locator('[data-clip-type="audio"]').count()
+  await toneButton.dragTo(page.locator('[data-track-kind="audio"]').first())
+  await page.locator('.media-library').getByRole('button', { name: /^Tone/ }).waitFor()
+  await page.waitForFunction(
+    (count) => document.querySelectorAll('[data-clip-type="audio"]').length === count + 1,
+    audioBefore,
+  )
+  assert.equal(await page.locator('.item-count').innerText(), '4')
+  await command('clear tone search', [])
+  assert.equal(await page.locator('.media-search').count(), 0)
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Tone/ }).count(), 1)
+  await page.locator('.media-library').getByRole('button', { name: /^Tone/ }).dragTo(page.locator('[data-track-kind="audio"]').first())
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Tone/ }).count(), 1)
+  assert.equal(await page.locator('.item-count').innerText(), '4')
   await command('rotate from 30 to 60 over 1 second', [{
     op: 'set_motion', clip_id: 'a', property: 'rotation', from: 30, to: 60, duration_s: 1,
   }])
@@ -193,6 +218,15 @@ try {
   const fromMenu = (await snapshot()).tracks.find((track) => track.alias === 'V1').clips.find((clip) => clip.alias === 'a')
   assert.deepEqual(fromMenu.motion.rotation, [{ t_s: 0, value: 10 }, { t_s: 1, value: 40 }])
   assert.equal(fromMenu.scale, 3)
+  await command('cut this clip in the middle and rotate both halves 30 degrees', [
+    { op: 'add_clip', vault_id: 'flower.mp4', clip_id: 'cut', track: 'V2', start_s: 10, duration_s: 2 },
+    { op: 'split', clip_id: 'cut', at_s: 11 },
+    { op: 'set_transform', clip_id: 'cut', rotation: 30 },
+  ])
+  const halves = (await snapshot()).tracks.find((track) => track.alias === 'V2').clips.filter((clip) => clip.start_s >= 10)
+  const turned = halves.filter((clip) => clip.rotation_deg === 30)
+  assert.equal(turned.length, 2)
+  assert.equal(turned.filter((clip) => clip.alias === 'cut').length, 1)
   console.log('Rotate and zoom: angles and scale land on the clip from the command hit, and a failed rotate does not show vault hits')
   console.log('Motion: from-to keys sample through the shared resolver, and a later rotate keeps zoom')
   console.log('Library: command hits and a placed search result stay after Search clears')

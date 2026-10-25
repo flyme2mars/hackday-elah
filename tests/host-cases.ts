@@ -231,5 +231,61 @@ export async function runHostCases() {
 
   const result = await findSimilar('upload/example.mp4', getTimeline(engine), [])
   check(result.note.includes('unavailable') && result.hits.length === 0, 'Upload fallback is explicit without a worker')
-  return 'Titles, rollback, undo/redo, rotate, zoom, motion, crossfades, shortcuts and upload fallback passed'
+
+  const splitEngine = new TimelineEngine({ fps: 30, initialTracks: [{ name: 'V1', kind: 'video' }] })
+  const splitTrack = splitEngine.getProject().tracks[0]
+  const early = splitEngine.addClip({ type: 'video', trackId: splitTrack.id, src: '/samples/flower.mp4', startFrame: 0, durationFrames: 90 })
+  await applyOps(splitEngine, [
+    { op: 'set_transform', clip_id: early.id, rotation: 20 },
+    { op: 'split', clip_id: early.id, at_s: 1.5 },
+  ], 'Turn then cut')
+  const earlyHalves = getTimeline(splitEngine).tracks[0].clips
+  check(earlyHalves.length === 2 && earlyHalves.every((clip) => clip.rotation_deg === 20), 'A rotate before the split is copied onto both halves')
+
+  const cut = splitEngine.addClip({ type: 'video', trackId: splitTrack.id, src: '/samples/bunny.mp4', startFrame: 120, durationFrames: 90 })
+  await applyOps(splitEngine, [
+    { op: 'split', clip_id: cut.id, at_s: 5.5 },
+    { op: 'set_transform', clip_id: cut.id, rotation: 30 },
+  ], 'Cut and turn both')
+  const both = getTimeline(splitEngine).tracks[0].clips.filter((clip) => clip.start_s >= 4)
+  check(both.length === 2 && both.every((clip) => clip.rotation_deg === 30), 'Split then rotate hits both halves')
+
+  const spun = splitEngine.addClip({ type: 'video', trackId: splitTrack.id, src: '/samples/flower.mp4', startFrame: 240, durationFrames: 90 })
+  await applyOps(splitEngine, [
+    { op: 'split', clip_id: spun.id, at_s: 9.5 },
+    { op: 'set_motion', clip_id: spun.id, property: 'rotation', keys: [{ t_s: 0, value: 30 }, { t_s: 1, value: 60 }] },
+  ], 'Cut and spin both')
+  const spunHalves = getTimeline(splitEngine).tracks[0].clips.filter((clip) => clip.start_s >= 8)
+  check(
+    spunHalves.length === 2 && spunHalves.every((clip) => clip.motion?.rotation?.[0]?.value === 30 && clip.motion?.rotation?.[1]?.value === 60),
+    'Split then motion hits both halves',
+  )
+
+  const trimmed = splitEngine.addClip({ type: 'video', trackId: splitTrack.id, src: '/samples/bunny.mp4', startFrame: 360, durationFrames: 90 })
+  await applyOps(splitEngine, [
+    { op: 'split', clip_id: trimmed.id, at_s: 13.5 },
+    { op: 'trim', clip_id: trimmed.id, duration_s: 0.5 },
+  ], 'Cut and trim both')
+  const short = getTimeline(splitEngine).tracks[0].clips.filter((clip) => clip.start_s >= 12 && clip.start_s < 16)
+  check(short.length === 2 && short.every((clip) => clip.duration_s === 0.5), 'Split then trim hits both halves')
+
+  const sided = splitEngine.addClip({ type: 'video', trackId: splitTrack.id, src: '/samples/flower.mp4', startFrame: 480, durationFrames: 90 })
+  await applyOps(splitEngine, [
+    { op: 'split', clip_id: sided.id, at_s: 17.5, right_id: 'right-half' },
+    { op: 'set_transform', clip_id: 'right-half', rotation: 40 },
+  ], 'Turn the right half')
+  const sides = getTimeline(splitEngine).tracks[0].clips.filter((clip) => clip.start_s >= 16 && clip.start_s < 20)
+  check(sides.length === 2, 'Right-only rotate leaves both halves on the track')
+  const right = sides.find((clip) => clip.alias === 'right-half')
+  const left = sides.find((clip) => clip.alias !== 'right-half')
+  check(right?.rotation_deg === 40 && left?.rotation_deg === 0, 'An op that names only the right half leaves the left half')
+
+  const doomed = splitEngine.addClip({ type: 'video', trackId: splitTrack.id, src: '/samples/bunny.mp4', startFrame: 600, durationFrames: 90 })
+  await applyOps(splitEngine, [
+    { op: 'split', clip_id: doomed.id, at_s: 21.5 },
+    { op: 'remove', clip_id: doomed.id },
+  ], 'Cut and remove both')
+  check(getTimeline(splitEngine).tracks[0].clips.every((clip) => clip.start_s < 20), 'Split then remove drops both halves')
+
+  return 'Titles, rollback, undo/redo, rotate, zoom, motion, crossfades, shortcuts, split fan-out and upload fallback passed'
 }

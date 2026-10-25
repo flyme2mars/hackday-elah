@@ -58,7 +58,7 @@ import {
   mergeLibraryAssets,
   type LibraryAsset,
 } from './host/library.ts'
-import { ensureImported, importLocalFiles } from './host/media.ts'
+import { beginMediaDrag, ensureImported, finishMediaDrag, importLocalFiles } from './host/media.ts'
 import { placeAsset } from './host/place.ts'
 import {
   clipRotationDegrees,
@@ -198,6 +198,16 @@ function EditorShell() {
 
   function fitTimeline() {
     requestAnimationFrame(() => timelineRef.current?.fitToWindow())
+  }
+
+  function onDragAsset(data: DataTransfer, asset: LibraryAsset, assetId: string) {
+    beginMediaDrag(data, asset, assetId, engine)
+  }
+
+  function onDragAssetEnd(assetId: string) {
+    const placed = finishMediaDrag(assetId, engine)
+    if (!placed) return
+    setLibrary((current) => mergeLibraryAssets(current, [placed]))
   }
 
   async function onPlace(asset: LibraryAsset) {
@@ -492,6 +502,8 @@ function EditorShell() {
         readyIds={readyIds}
         onPlace={(asset) => void onPlace(asset)}
         onPrepare={(asset) => void ensureImported(asset)}
+        onDragAsset={onDragAsset}
+        onDragAssetEnd={onDragAssetEnd}
         onUpload={(files) => void onUpload(files)}
       />
       <section className="stage" aria-label="Preview" tabIndex={0}>

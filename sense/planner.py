@@ -715,7 +715,7 @@ async def _execute(state: TurnState, call: Call) -> tuple[dict[str, Any], bytes 
         if name == "transcribe":
             return await _transcribe(state, str(args.get("vault_id") or ""), args.get("start_s"), args.get("end_s")), None
         if name == "apply_ops":
-            ops = _prefer_selection(validate_ops(args.get("ops"), state.allow), state.selected_clip_ids)
+            ops = fan_selected_ops(validate_ops(args.get("ops"), state.allow), state.selected_clip_ids)
             label = args.get("label")
             state.ops = ops
             state.label = label.strip()[:80] if isinstance(label, str) and label.strip() else "Edit"
@@ -1161,15 +1161,22 @@ def _selected_ids(body: dict[str, Any]) -> list[str]:
     return ids
 
 
-def _prefer_selection(ops: list[dict[str, Any]], selected: list[str]) -> list[dict[str, Any]]:
+def fan_selected_ops(ops: list[dict[str, Any]], selected: list[str]) -> list[dict[str, Any]]:
+    """Copy selection ops onto every selected id when several clips are selected.
+
+    One selected id keeps the miss-only rule: rewrite a foreign clip_id, and
+    leave an id that is already selected alone. Two or more selected ids also
+    rewrite an op that already names one of them. move is never copied.
+    """
     if not selected:
         return ops
     chosen = set(selected)
+    multi = len(selected) >= 2
     rewritten: list[dict[str, Any]] = []
     for op in ops:
         name = op.get("op")
         clip_id = op.get("clip_id")
-        if name not in _SELECTION_OPS or not isinstance(clip_id, str) or clip_id in chosen:
+        if name not in _SELECTION_OPS or not isinstance(clip_id, str) or (clip_id in chosen and not multi):
             rewritten.append(op)
             continue
         for target in selected:

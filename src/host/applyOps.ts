@@ -7,6 +7,7 @@ import {
 import { getLibraryAsset, vaultIdForSrc } from './library.ts'
 import { clearedMotionPatch, motionForSnapshot, type HostMotion } from './motion.ts'
 import { measureClipForRotation, setClipMotion, setClipTransform, wrapDegrees } from './rotate.ts'
+import { opsForSplitParents, type SplitPair } from './splitFollow.ts'
 import {
   frameCountToSeconds,
   secondsToFrameCount,
@@ -87,10 +88,13 @@ export function applyListedOps(
   label?: string,
   rotationSizes: ReadonlyMap<string, ClipSize> = EMPTY_ROTATION_SIZES,
 ): void {
+  const splitPairs = new Map<string, SplitPair>()
   const run = () => {
     ops.forEach((op, index) => {
       try {
-        applyOne(engine, op, assets, rotationSizes)
+        for (const target of opsForSplitParents(op, splitPairs)) {
+          applyOne(engine, target, assets, rotationSizes, splitPairs)
+        }
       } catch (error) {
         if (error instanceof ApplyOpsError) throw error
         const message = error instanceof Error ? error.message : String(error)
@@ -190,11 +194,25 @@ async function measureRotationSizes(engine: TimelineEngine, ops: readonly Op[]):
   return sizes
 }
 
+function sizeForSplitHalf(
+  clipId: string,
+  rotationSizes: ReadonlyMap<string, ClipSize>,
+  splitPairs: ReadonlyMap<string, SplitPair>,
+): ClipSize | undefined {
+  const direct = rotationSizes.get(clipId)
+  if (direct) return direct
+  for (const pair of splitPairs.values()) {
+    if (pair.rightId === clipId) return rotationSizes.get(pair.leftId)
+  }
+  return undefined
+}
+
 function applyOne(
   engine: TimelineEngine,
   op: Op,
   assets: ReadonlyMap<string, ResolvedAsset>,
   rotationSizes: ReadonlyMap<string, ClipSize>,
+  splitPairs: Map<string, SplitPair>,
 ): void {
   const fps = engine.getProject().fps
 
@@ -351,6 +369,7 @@ function applyOne(
       remember(op.clip_id, { id: leftId, trackId: ref.trackId })
       if (op.left_id) remember(op.left_id, { id: leftId, trackId: ref.trackId })
       if (op.right_id) remember(op.right_id, { id: rightId, trackId: ref.trackId })
+      splitPairs.set(op.clip_id, { leftId, rightId })
       return
     }
     case 'move': {
@@ -406,7 +425,7 @@ function applyOne(
           ...(op.x !== undefined ? { x: op.x } : {}),
           ...(op.y !== undefined ? { y: op.y } : {}),
         },
-        rotationSizes.get(ref.id),
+        sizeForSplitHalf(ref.id, rotationSizes, splitPairs),
       )
       const turned = mustClip(engine, ref.id)
       remember(op.clip_id, { id: ref.id, trackId: turned.trackId })
