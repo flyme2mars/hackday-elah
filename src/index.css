@@ -100,6 +100,8 @@ button:focus-visible,
   background: #090909;
   --elah-selection-color: #c6c6c6;
   --elah-selection-handle: #f1f1f1;
+  --elah-stage-border: rgba(255, 255, 255, 0.2);
+  --elah-stage-glow: none;
   --elah-tick-color: #454545;
   --elah-tick-label: #909090;
   --elah-menu-bg: #1b1b1b;
@@ -466,12 +468,46 @@ p {
   color: #a3a3a3;
 }
 .stage-fit {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   color: #777;
   font-size: 10px;
 }
-.stage-fit span {
-  margin: 0 8px;
+.stage-fit > span[aria-hidden] {
   color: #444;
+}
+.aspect-control {
+  display: inline-flex;
+  align-items: center;
+  position: relative;
+  min-width: 0;
+}
+.aspect-control select {
+  max-width: 220px;
+  min-height: 28px;
+  padding: 4px 24px 4px 8px;
+  appearance: none;
+  border: 1px solid #353535;
+  border-radius: 5px;
+  background: #1a1a1a;
+  color: #bdbdbd;
+  color-scheme: dark;
+  font-size: 10px;
+  cursor: pointer;
+}
+.aspect-control select:hover {
+  border-color: #676767;
+  color: #f1f1f1;
+}
+.aspect-control select:focus-visible {
+  outline: 2px solid #bcbcbc;
+  outline-offset: 2px;
+}
+.aspect-control > svg {
+  position: absolute;
+  right: 8px;
+  pointer-events: none;
 }
 .stage-canvas {
   position: relative;

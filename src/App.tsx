@@ -45,6 +45,7 @@ import { usePreviewOverlayBounds } from './host/usePreviewOverlayBounds.ts'
 import CommandBar, { type VoiceControl } from './CommandBar.tsx'
 import { useDictation } from './host/useDictation.ts'
 import MediaPanel from './MediaPanel.tsx'
+import { ProjectAspectControl, ProjectFormatReadout } from './ProjectFormat.tsx'
 import {
   applyOps,
   getTimeline,
@@ -499,9 +500,7 @@ function EditorShell() {
           Untitled
         </div>
         <div className="app-actions">
-          <span className="project-format">
-            1080 × 1920 <span> / </span> 30 FPS
-          </span>
+          <ProjectFormatReadout />
           <ExportButton onStatus={setStatus} />
         </div>
       </header>
@@ -518,9 +517,7 @@ function EditorShell() {
       <section className="stage" aria-label="Preview" tabIndex={0}>
         <header className="stage-bar">
           <h2>Preview</h2>
-          <span className="stage-fit">
-            Fit <span>·</span> 9:16
-          </span>
+          <ProjectAspectControl />
         </header>
         <div ref={previewRef} className="stage-canvas">
           <PreviewBoundary>
@@ -1083,6 +1080,7 @@ function formatScale(scale: number): string {
 
 function DebugSnapshot() {
   const engine = useTimelineEngine()
+  useTracksStore((state) => state.stage)
   useTracksStore((state) => state.clips)
   useTracksStore((state) => state.tracks)
   return (
