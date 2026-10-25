@@ -157,13 +157,16 @@ function probeMediaSize(src: string, kind: 'video' | 'image'): Promise<{ width: 
   return new Promise((resolve, reject) => {
     const el = document.createElement(kind === 'video' ? 'video' : 'img')
     let settled = false
+    let timer = 0
     const finish = (width: number, height: number) => {
       if (settled) return
       settled = true
+      window.clearTimeout(timer)
       el.remove()
       if (width > 0 && height > 0) resolve({ width, height })
       else reject(new Error('Could not read the clip size.'))
     }
+    timer = window.setTimeout(() => finish(0, 0), 800)
     el.addEventListener('error', () => finish(0, 0))
     if (el instanceof HTMLVideoElement) {
       el.preload = 'metadata'

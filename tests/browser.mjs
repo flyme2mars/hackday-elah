@@ -15,17 +15,23 @@ try {
 
   // Exercise the real command field, parser and host through a mocked planner response.
   let nextOps = []
+  let nextHits = {}
+  let nextNote = ''
   const requests = []
   await page.route('**/api/library', (route) => route.fulfill({ json: { items: [] } }))
   await page.route('**/api/v1/command', (route) => {
     requests.push(route.request().postDataJSON())
-    return route.fulfill({ json: { planner: 'test', hits: {}, ops: nextOps, ops_label: 'Test edit', note: '' } })
+    return route.fulfill({
+      json: { planner: 'test', hits: nextHits, ops: nextOps, ops_label: 'Test edit', note: nextNote },
+    })
   })
   await page.goto(`${base}/?debug=1`)
   const input = page.getByRole('textbox', { name: 'Agent command' })
   const snapshot = async () => JSON.parse(await page.locator('.debug-json').textContent())
-  const command = async (text, ops) => {
+  const command = async (text, ops, extra = {}) => {
     nextOps = ops
+    nextHits = extra.hits ?? {}
+    nextNote = extra.note ?? ''
     await input.fill(text)
     await input.press('Enter')
     await page.waitForFunction(() => document.querySelector('.command-input').value === '' && !document.querySelector('.command-input').disabled)
@@ -68,6 +74,26 @@ try {
   await page.waitForFunction(() => [...document.querySelectorAll('.stage-canvas canvas')].some((canvas) => canvas.parentElement.style.opacity === '0.5'))
   await page.screenshot({ path: '/tmp/hackday-crossfade-preview.png' })
   console.log('Preview: native crossfade overlay reaches 50% at the cut during keyboard scrubbing')
+  await command('rotate this clip 180', [{ op: 'set_transform', clip_id: 'a', rotation: 180 }])
+  const rotated = (await snapshot()).tracks.find((track) => track.alias === 'V1').clips.find((clip) => clip.alias === 'a')
+  assert.equal(rotated.rotation_deg, 180)
+  assert.ok(Array.isArray(requests.at(-1).selected_clip_ids))
+  await command('rotate this clip -35', [{ op: 'set_transform', clip_id: 'a', rotation: -35 }])
+  const freed = (await snapshot()).tracks.find((track) => track.alias === 'V1').clips.find((clip) => clip.alias === 'a')
+  assert.equal(freed.rotation_deg, -35)
+  const flowerHit = { vault_id: 'flower.mp4', name: 'Flower', kind: 'video', duration_s: 4, src: '/samples/flower.mp4' }
+  await command('find flower footage', [], { hits: { video: [flowerHit] } })
+  await page.locator('.media-search').waitFor()
+  nextHits = { video: [flowerHit] }
+  nextOps = [{ op: 'set_transform', clip_id: 'missing', rotation: 90 }]
+  nextNote = ''
+  await input.fill('rotate the missing clip 90')
+  await input.press('Enter')
+  await page.locator('.status').getByText(/Unknown clip/).waitFor()
+  assert.equal(await page.locator('.media-search').count(), 0)
+  assert.match(await page.locator('.status').innerText(), /Unknown clip/)
+  assert.doesNotMatch(await page.locator('.status').innerText(), /clip menu/)
+  console.log('Rotate: 180 and a free angle land on the timeline, and a failed rotate does not show vault hits')
 } finally {
   await browser.close()
 }

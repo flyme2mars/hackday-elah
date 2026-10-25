@@ -57,7 +57,7 @@ Busy handoff notes are already in the worker (`DigitalOcean busy; trying Gemini.
 
 ## Ops contract
 
-`POST /v1/command` body: `command`, `timeline`, `library`.
+`POST /v1/command` body: `command`, `timeline`, `library`, and `selected_clip_ids` when clips are selected.
 
 Sense tools run in the worker: `search_vault`, `similar`, `get_frame`, `transcribe`, `get_timeline`, `apply_ops`.
 
@@ -65,11 +65,11 @@ Sense tools run in the worker: `search_vault`, `similar`, `get_frame`, `transcri
 
 Tracks: V1 and V2 video, A1 audio, T1 elements (text).
 
-Host ops (`coerceOps` / `applyOps`): `set_stage`, `add_clip`, `add_text`, `trim`, `split`, `move`, `remove`, `set_volume`, `update_text`.
+Host ops (`coerceOps` / `applyOps`): `set_stage`, `add_clip`, `add_text`, `trim`, `split`, `move`, `remove`, `set_volume`, `update_text`, `crossfade`, `set_transform`.
 
 `clip_id` is a host alias for a clip created in the same batch. `vault_id` must already be in the library the browser sent or that search returned.
 
-The planner prompt and `validate_ops` also accept `set_transform` with `rotation` in degrees. The host does not apply it. `coerceOps` fails that op and the status line says to rotate from the clip menu. Free-angle rotate is `ClipMenu` plus `src/host/rotate.ts` (−180…180). Elah stores `transform.rotation` in **radians**.
+`set_transform` `rotation` is degrees clockwise. `applyOps` passes that number to `setClipRotation` in `src/host/rotate.ts`, which writes radians on `transform.rotation` inside the command's one undo step. ClipMenu uses the same helper. When the request includes `selected_clip_ids`, trim, rotate, remove, and split use those ids.
 
 `needsUprightFlip` in `src/host/orient.ts` returns false. Do not auto-apply `scaleY = -1` on place.
 

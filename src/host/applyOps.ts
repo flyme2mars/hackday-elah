@@ -5,6 +5,7 @@ import {
   type Transform,
 } from '@elah/editor'
 import { getLibraryAsset, vaultIdForSrc } from './library.ts'
+import { measureClipForRotation, setClipRotation, wrapDegrees } from './rotate.ts'
 import {
   frameCountToSeconds,
   secondsToFrameCount,
@@ -37,6 +38,10 @@ interface ClipBinding {
   trackId: string
 }
 
+type ClipSize = { width: number; height: number }
+
+const EMPTY_ROTATION_SIZES: ReadonlyMap<string, ClipSize> = new Map()
+
 const aliases = new Map<string, ClipBinding>()
 const vaultByClipId = new Map<string, string>()
 
@@ -68,7 +73,8 @@ export async function applyOps(
     throw new Error('applyOps needs at least one op')
   }
   const assets = await resolveAssets(ops)
-  applyListedOps(engine, ops, assets, label)
+  const rotationSizes = await measureRotationSizes(engine, ops)
+  applyListedOps(engine, ops, assets, label, rotationSizes)
   return { label, opCount: ops.length, snapshot: getTimeline(engine) }
 }
 
@@ -78,11 +84,12 @@ export function applyListedOps(
   ops: readonly Op[],
   assets: ReadonlyMap<string, ResolvedAsset>,
   label?: string,
+  rotationSizes: ReadonlyMap<string, ClipSize> = EMPTY_ROTATION_SIZES,
 ): void {
   const run = () => {
     ops.forEach((op, index) => {
       try {
-        applyOne(engine, op, assets)
+        applyOne(engine, op, assets, rotationSizes)
       } catch (error) {
         if (error instanceof ApplyOpsError) throw error
         const message = error instanceof Error ? error.message : String(error)
@@ -165,10 +172,28 @@ async function resolveAssets(ops: readonly Op[]): Promise<Map<string, ResolvedAs
   return resolved
 }
 
+async function measureRotationSizes(engine: TimelineEngine, ops: readonly Op[]): Promise<Map<string, ClipSize>> {
+  const sizes = new Map<string, ClipSize>()
+  for (const op of ops) {
+    if (op.op !== 'set_transform') continue
+    let clipId = op.clip_id
+    try {
+      clipId = resolveClip(engine, op.clip_id).id
+    } catch {
+      continue
+    }
+    if (sizes.has(clipId)) continue
+    const measured = await measureClipForRotation(engine, clipId)
+    if (measured) sizes.set(clipId, measured)
+  }
+  return sizes
+}
+
 function applyOne(
   engine: TimelineEngine,
   op: Op,
   assets: ReadonlyMap<string, ResolvedAsset>,
+  rotationSizes: ReadonlyMap<string, ClipSize>,
 ): void {
   const fps = engine.getProject().fps
 
@@ -356,6 +381,13 @@ function applyOne(
       engine.updateClip(ref.id, ref.trackId, { volume: op.volume })
       return
     }
+    case 'set_transform': {
+      const ref = resolveClip(engine, op.clip_id)
+      setClipRotation(engine, ref.id, { absoluteDegrees: op.rotation }, rotationSizes.get(ref.id))
+      const turned = mustClip(engine, ref.id)
+      remember(op.clip_id, { id: ref.id, trackId: turned.trackId })
+      return
+    }
     case 'update_text': {
       validateTextFields(op, fps)
       const ref = resolveClip(engine, op.clip_id)
@@ -518,6 +550,24 @@ export function reconcileClipVaults(engine: TimelineEngine): void {
   }
 }
 
+export function selectedPlannerClipIds(snapshot: TimelineSnapshot, engineIds: readonly string[]): string[] {
+  const plannerId = new Map<string, string>()
+  for (const track of snapshot.tracks) {
+    for (const clip of track.clips) {
+      plannerId.set(clip.id, clip.alias ?? clip.id)
+    }
+  }
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const id of engineIds) {
+    const planner = plannerId.get(id) ?? id
+    if (!planner || seen.has(planner)) continue
+    seen.add(planner)
+    out.push(planner)
+  }
+  return out
+}
+
 function forgetClip(clipId: string): void {
   for (const [alias, binding] of aliases) {
     if (binding.id === clipId) aliases.delete(alias)
@@ -543,6 +593,7 @@ function clipSnapshot(clip: Clip, fps: number): TimelineSnapshot['tracks'][numbe
     duration_s: frameCountToSeconds(clip.durationFrames, fps),
     in_s: frameCountToSeconds(clip.sourceStartFrame, fps),
     volume: clip.volume ?? null,
+    rotation_deg: wrapDegrees(((clip.transform?.rotation ?? 0) * 180) / Math.PI),
     ...(clip.type === 'text' ? { content: clip.content ?? '' } : {}),
     ...(vaultId ? { vault_id: vaultId } : {}),
   }
