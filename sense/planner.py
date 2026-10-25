@@ -16,7 +16,7 @@ from urllib.parse import quote, urlparse
 import httpx
 
 from sense.catalog import Catalog, Item
-from sense.retrieve import cosine, lexical
+from sense.retrieve import CosineRank, cosine, infer_modality, lexical, matching_row, query_input
 
 INSTRUCTIONS = """You edit a timeline by calling tools. For trim, split, cut, move, remove, rotate, volume, text, crossfade, or other edits on clips already on the timeline, call apply_ops right away. Do not call search_vault for those. Search the library only when the user asks to find footage, or before you place new media that is not already on the timeline. After that search, place the clip with add_clip. Prefer vault_id values from search_vault or similar. You may also use a vault_id the user typed if it is in the library. Do not invent ids.
 
@@ -723,14 +723,27 @@ async def _execute(state: TurnState, call: Call) -> tuple[dict[str, Any], bytes 
 
 
 async def _search(state: TurnState, query: str, modality: str | None, k: int) -> tuple[list[Item], str]:
+    kind = infer_modality(query, modality)
     vector = await _embed_text(query) if _vectors_ready(state.catalog) else None
-    if vector is not None and state.catalog.vectors is not None:
-        ranked = cosine(state.catalog.vectors.ids, state.catalog.vectors.matrix, vector, state.by_id, modality, k)
-        if ranked is not None:
-            for item, score in ranked:
-                state.scores[item.id] = score
-            return [item for item, _ in ranked], "embedding"
-    return lexical(state.corpus, query, modality, k), "name"
+    if kind is None:
+        found, mode = _rank(state, query, "video", k, vector)
+        if found:
+            return found, mode
+        return _rank(state, query, None, k, vector)
+    return _rank(state, query, kind, k, vector)
+
+
+def _rank(state: TurnState, query: str, modality: str | None, k: int, vector: list[float] | None) -> tuple[list[Item], str]:
+    vectors = state.catalog.vectors
+    if vector is not None and vectors is not None and vectors.matrix is not None:
+        ranked = cosine(vectors.ids, vectors.matrix, vector, state.by_id, modality, k)
+        covered = _covered_hits(state, ranked)
+        if covered is not None:
+            return covered, "embedding"
+    found = lexical(state.corpus, query, modality, k)
+    for item in found:
+        state.scores.pop(item.id, None)
+    return found, "name"
 
 
 async def _similar(state: TurnState, vault_id: str, modality: str | None, k: int) -> tuple[list[Item], str]:
@@ -738,24 +751,40 @@ async def _similar(state: TurnState, vault_id: str, modality: str | None, k: int
     if source is None:
         state.notes.append("That clip is not in the library.")
         return [], "name"
-    if _vectors_ready(state.catalog) and state.catalog.vectors is not None:
-        row = {item_id: index for index, item_id in enumerate(state.catalog.vectors.ids)}
-        if vault_id in row:
-            matrix = state.catalog.vectors.matrix
-            vector = [float(value) for value in matrix[row[vault_id]]]
-            ranked = cosine(state.catalog.vectors.ids, matrix, vector, state.by_id, modality, k, {vault_id})
-            if ranked is not None:
-                for item, score in ranked:
-                    state.scores[item.id] = score
-                return [item for item, _ in ranked], "embedding"
+    kind = modality if modality in ("video", "audio", "image") else source.kind
+    vectors = state.catalog.vectors
+    if _vectors_ready(state.catalog) and vectors is not None and vectors.matrix is not None:
+        row = matching_row(vectors.ids, vault_id)
+        if row is None:
+            row = matching_row(vectors.ids, source.id)
+        if row is not None:
+            vector = [float(value) for value in vectors.matrix[row]]
+            covered = _covered_hits(
+                state,
+                cosine(vectors.ids, vectors.matrix, vector, state.by_id, kind, k, {vault_id, source.id}),
+            )
+            if covered is not None:
+                return covered, "embedding"
         embedded = await _embed_media(source)
         if embedded is not None:
-            ranked = cosine(state.catalog.vectors.ids, state.catalog.vectors.matrix, embedded, state.by_id, modality, k, {vault_id})
-            if ranked is not None:
-                for item, score in ranked:
-                    state.scores[item.id] = score
-                return [item for item, _ in ranked], "embedding"
-    return lexical(state.corpus, source.name, modality, k, {vault_id}), "name"
+            covered = _covered_hits(
+                state,
+                cosine(vectors.ids, vectors.matrix, embedded, state.by_id, kind, k, {vault_id, source.id}),
+            )
+            if covered is not None:
+                return covered, "embedding"
+    found = lexical(state.corpus, source.name, kind, k, {vault_id, source.id})
+    for item in found:
+        state.scores.pop(item.id, None)
+    return found, "name"
+
+
+def _covered_hits(state: TurnState, ranked: CosineRank | None) -> list[Item] | None:
+    if ranked is None or ranked.joined == 0:
+        return None
+    for item, score in ranked.hits:
+        state.scores[item.id] = score
+    return [item for item, _score in ranked.hits]
 
 
 async def _frame(state: TurnState, vault_id: str, t_s: object) -> tuple[dict[str, Any], bytes | None]:
@@ -1127,15 +1156,21 @@ def _req_num(raw: dict[str, Any], key: str) -> float:
 
 
 def _modality(value: object) -> str | None:
-    if value in ("video", "audio", "image"):
-        return str(value)
-    return None
+    return infer_modality("", value)
 
 
 def _k(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 5
-    return max(1, min(12, int(value)))
+    number = value
+    if isinstance(number, str):
+        try:
+            number = float(number.strip())
+        except ValueError:
+            number = None
+    if isinstance(number, bool) or not isinstance(number, (int, float)):
+        return 8
+    if number != number or number in (float("inf"), float("-inf")):
+        return 8
+    return max(1, min(12, int(number)))
 
 
 def _args(value: object) -> dict[str, Any]:
@@ -1275,10 +1310,11 @@ async def _mlx_up() -> bool:
 
 
 async def _embed_text(text: str) -> list[float] | None:
-    if not text.strip() or not await _mlx_up():
+    prompt = query_input(text)
+    if not prompt or not await _mlx_up():
         return None
     url = os.environ.get("SENSE_MLX_EMBED_URL", f"{mlx_origin()}/v1/embeddings")
-    payload = {"model": os.environ.get("SENSE_EMBED_MODEL", "embeddinggemma"), "input": text}
+    payload = {"model": os.environ.get("SENSE_EMBED_MODEL", "embeddinggemma"), "input": prompt}
     return await _post_embedding(url, payload)
 
 
