@@ -9,12 +9,17 @@ import {
 /** Elah applies `transform.rotation` with sin/cos and canvas `rotate`, so the unit is radians. */
 const DEG_TO_RAD = Math.PI / 180
 
-export interface RotationChange {
+export interface TransformChange {
   /** Added to the current angle. Menu clicks use this. */
   deltaDegrees?: number
   /** Replaces the current angle. `set_transform` uses this. */
   absoluteDegrees?: number
+  scale?: number
+  x?: number
+  y?: number
 }
+
+export type RotationChange = Pick<TransformChange, 'deltaDegrees' | 'absoluteDegrees'>
 
 /** Wrapped degrees in (-180, 180], matching the radians elah stores. */
 export function wrapDegrees(degrees: number): number {
@@ -56,12 +61,22 @@ export function setClipRotation(
   measured?: { width: number; height: number },
   options?: { preview?: boolean },
 ): void {
+  setClipTransform(engine, clipId, change, measured, options)
+}
+
+export function setClipTransform(
+  engine: TimelineEngine,
+  clipId: string,
+  change: TransformChange,
+  measured?: { width: number; height: number },
+  options?: { preview?: boolean },
+): void {
   const found = engine.findClip(clipId)
   if (!found) throw new Error(`Unknown clip "${clipId}"`)
   const clip = found.clip
   const prev = clip.transform
   const rotation = nextRotation(prev?.rotation ?? 0, change)
-  const transform = buildTransform(engine, clip, rotation, measured ?? sizeFromLibrary(clip))
+  const transform = buildTransform(engine, clip, rotation, change, measured ?? sizeFromLibrary(clip))
   if (options?.preview) {
     engine.previewClip(clip.id, found.trackId, { transform })
     return
@@ -87,19 +102,25 @@ export async function measureClipForRotation(
   }
 }
 
-function nextRotation(currentRadians: number, change: RotationChange): number {
+function nextRotation(currentRadians: number, change: TransformChange): number {
   if (change.absoluteDegrees !== undefined) return wrapRadians(change.absoluteDegrees * DEG_TO_RAD)
-  return wrapRadians(currentRadians + (change.deltaDegrees ?? 0) * DEG_TO_RAD)
+  if (change.deltaDegrees === undefined) return currentRadians
+  return wrapRadians(currentRadians + change.deltaDegrees * DEG_TO_RAD)
+}
+
+function placesClip(change: TransformChange): boolean {
+  return change.scale !== undefined || change.x !== undefined || change.y !== undefined
 }
 
 function buildTransform(
   engine: TimelineEngine,
   clip: Clip,
   rotation: number,
+  change: TransformChange,
   size: { width: number; height: number } | undefined,
 ): Transform {
   const stage = engine.getProject().stage
-  if (size && (clip.type === 'video' || clip.type === 'image') && stage.width > 0 && stage.height > 0) {
+  if (!placesClip(change) && size && (clip.type === 'video' || clip.type === 'image') && stage.width > 0 && stage.height > 0) {
     // Start from contain-fit, then shrink so the rotated box still sits inside the stage.
     // 180° keeps the upright scale. 90° would otherwise crop a portrait frame.
     const fit = transformFromContainRect(size.width, size.height, stage.width, stage.height)
@@ -115,9 +136,9 @@ function buildTransform(
   }
   const prev = clip.transform
   return {
-    x: prev?.x ?? 0.5,
-    y: prev?.y ?? 0.5,
-    scale: prev?.scale ?? 1,
+    x: change.x ?? prev?.x ?? 0.5,
+    y: change.y ?? prev?.y ?? 0.5,
+    scale: change.scale ?? prev?.scale ?? 1,
     rotation,
     anchor: prev?.anchor ?? { x: 0.5, y: 0.5 },
   }

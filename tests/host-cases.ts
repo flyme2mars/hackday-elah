@@ -77,6 +77,31 @@ export async function runHostCases() {
   const free = engine.findClip(a.id)?.clip.transform?.rotation ?? 99
   check(Math.abs(free - (-35 * Math.PI / 180)) < 1e-6, 'free angle is radians')
   check(getTimeline(engine).tracks.flatMap((track) => track.clips).find((clip) => clip.id === a.id)?.rotation_deg === -35, 'snapshot reports the free angle')
+  const zoomed = coerceOps([{ op: 'set_transform', clip_id: a.id, scale: 2 }])
+  check(zoomed[0]?.op === 'set_transform' && zoomed[0].scale === 2 && zoomed[0].rotation === undefined, 'zoom parses scale without rotation')
+  await applyOps(engine, zoomed, 'Zoom in')
+  check(engine.findClip(a.id)?.clip.transform?.scale === 2, 'zoom in sets scale to 2')
+  check(Math.abs((engine.findClip(a.id)?.clip.transform?.rotation ?? 0) - (-35 * Math.PI / 180)) < 1e-6, 'zoom keeps the free angle')
+  await applyOps(engine, coerceOps([{ op: 'set_transform', clip_id: a.id, scale: 3 }]), 'Zoom in more')
+  check(engine.findClip(a.id)?.clip.transform?.scale === 3, 'a second zoom changes scale')
+  const reportedZoom = getTimeline(engine).tracks.flatMap((track) => track.clips).find((clip) => clip.id === a.id)
+  check(reportedZoom?.scale === 3, 'snapshot reports scale')
+  await applyOps(engine, coerceOps([{ op: 'set_transform', clip_id: a.id, x: 0.25, y: 0.8 }]), 'Place clip')
+  const placed = engine.findClip(a.id)?.clip.transform
+  check(placed?.x === 0.25 && placed?.y === 0.8 && placed?.scale === 3, 'position keeps the zoom')
+  await applyOps(engine, coerceOps([{ op: 'set_transform', clip_id: a.id, rotation: 180, scale: 2 }]), 'Turn and zoom')
+  const turned = engine.findClip(a.id)?.clip.transform
+  check(Math.abs((turned?.rotation ?? 0) - Math.PI) < 1e-6 && turned?.scale === 2, 'rotation and scale apply together')
+  check(engine.undo(), 'transform undo')
+  check(engine.findClip(a.id)?.clip.transform?.scale === 3, 'undo restores the previous scale')
+  let scaleRejected = false
+  try {
+    coerceOps([{ op: 'set_transform', clip_id: a.id, scale: 0 }])
+  } catch (error) {
+    scaleRejected = true
+    check(String(error).includes('scale must be positive'), 'zero scale is rejected')
+  }
+  check(scaleRejected, 'zero scale does not apply')
   const beforeMissing = engine.getProject()
   let rotateRejected = false
   try {
@@ -108,6 +133,9 @@ export async function runHostCases() {
         in_s: 0,
         volume: 1,
         rotation_deg: 0,
+        scale: 1,
+        x: 0.5,
+        y: 0.5,
       }],
     }],
   }, ['engine-id', 'engine-id'])
@@ -156,5 +184,5 @@ export async function runHostCases() {
 
   const result = await findSimilar('upload/example.mp4', getTimeline(engine), [])
   check(result.note.includes('unavailable') && result.hits.length === 0, 'Upload fallback is explicit without a worker')
-  return 'Titles, rollback, undo/redo, rotate, crossfades, shortcuts and upload fallback passed'
+  return 'Titles, rollback, undo/redo, rotate, zoom, crossfades, shortcuts and upload fallback passed'
 }

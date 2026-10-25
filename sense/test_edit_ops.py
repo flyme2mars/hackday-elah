@@ -62,6 +62,20 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Do not use this to trim", search["description"])
         turned = validate_ops([{"op": "set_transform", "clip_id": "c1", "rotation": "180"}], set())
         self.assertEqual(turned, [{"op": "set_transform", "clip_id": "c1", "rotation": 180.0}])
+        self.assertIn("scale replaces the clip scale", INSTRUCTIONS)
+        scaled = validate_ops([{"op": "set_transform", "clip_id": "c1", "scale": "2"}], set())
+        self.assertEqual(scaled, [{"op": "set_transform", "clip_id": "c1", "scale": 2.0}])
+        placed = validate_ops([{"op": "set_transform", "clip_id": "c1", "x": 0.2, "y": "0.8", "scale": 1.5}], set())
+        self.assertEqual(placed, [{"op": "set_transform", "clip_id": "c1", "scale": 1.5, "x": 0.2, "y": 0.8}])
+        for bad in (
+            {"op": "set_transform", "clip_id": "c1"},
+            {"op": "set_transform", "clip_id": "c1", "scale": 0},
+            {"op": "set_transform", "clip_id": "c1", "scale": -1},
+            {"op": "set_transform", "clip_id": "c1", "x": 2},
+            {"op": "set_transform", "clip_id": "c1", "y": -0.1},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(OpError):
+                validate_ops([bad], set())
 
     async def test_pure_edits_do_not_search_and_failures_keep_the_error(self):
         commands = (
@@ -75,6 +89,8 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
             "update the title",
             "crossfade these clips",
             "rotate this clip 180",
+            "zoom in on this clip",
+            "scale this clip",
         )
 
         async def search_only(contents, messages):
@@ -206,6 +222,21 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["ops"], [])
         self.assertEqual(result["hits"], {"video": [], "audio": [], "image": []})
         self.assertIn("Planner not loaded. No edits were applied.", result["note"])
+
+    async def test_selected_clip_receives_scale(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [{"op": "set_transform", "clip_id": "other", "scale": 2}]})], contents, messages
+
+        body = {
+            "command": "zoom in on this clip",
+            "timeline": timeline(),
+            "library": [],
+            "selected_clip_ids": ["c1"],
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(beach_catalog(), body)
+        self.assertEqual(result["ops"], [{"op": "set_transform", "clip_id": "c1", "scale": 2.0}])
+        self.assertEqual(result["hits"]["video"], [])
 
 
 def _planner(planner):

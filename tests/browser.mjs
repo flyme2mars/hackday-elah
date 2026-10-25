@@ -93,6 +93,18 @@ try {
   await command('rotate this clip -35', [{ op: 'set_transform', clip_id: 'a', rotation: -35 }])
   const freed = (await snapshot()).tracks.find((track) => track.alias === 'V1').clips.find((clip) => clip.alias === 'a')
   assert.equal(freed.rotation_deg, -35)
+  await command('zoom in', [{ op: 'set_transform', clip_id: 'a', scale: 2 }])
+  const zoomed = (await snapshot()).tracks.find((track) => track.alias === 'V1').clips.find((clip) => clip.alias === 'a')
+  assert.equal(zoomed.scale, 2)
+  assert.equal(zoomed.rotation_deg, -35)
+  await command('zoom in more', [{ op: 'set_transform', clip_id: 'a', scale: 3 }])
+  const closer = (await snapshot()).tracks.find((track) => track.alias === 'V1').clips.find((clip) => clip.alias === 'a')
+  assert.equal(closer.scale, 3)
+  await command('place the frame', [{ op: 'set_transform', clip_id: 'a', x: 0.2, y: 0.7 }])
+  const moved = (await snapshot()).tracks.find((track) => track.alias === 'V1').clips.find((clip) => clip.alias === 'a')
+  assert.equal(moved.x, 0.2)
+  assert.equal(moved.y, 0.7)
+  assert.equal(moved.scale, 3)
   const flowerHit = { vault_id: 'flower.mp4', name: 'Flower', kind: 'video', duration_s: 4, src: '/samples/flower.mp4' }
   await command('find flower footage', [], { hits: { video: [flowerHit] } })
   await page.locator('.media-search').waitFor()
@@ -105,7 +117,7 @@ try {
   assert.equal(await page.locator('.media-search').count(), 0)
   assert.match(await page.locator('.status').innerText(), /Unknown clip/)
   assert.doesNotMatch(await page.locator('.status').innerText(), /clip menu/)
-  console.log('Rotate: 180 and a free angle land on the timeline, and a failed rotate does not show vault hits')
+  console.log('Rotate and zoom: angles and scale land on the clip from the command hit, and a failed rotate does not show vault hits')
 } finally {
   await browser.close()
 }

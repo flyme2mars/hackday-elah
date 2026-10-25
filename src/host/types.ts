@@ -57,7 +57,14 @@ export type Op =
     }
   | { op: 'remove'; clip_id: string }
   | { op: 'set_volume'; clip_id: string; volume: number }
-  | { op: 'set_transform'; clip_id: string; rotation: number }
+  | {
+      op: 'set_transform'
+      clip_id: string
+      rotation?: number
+      scale?: number
+      x?: number
+      y?: number
+    }
   | {
       op: 'update_text'
       clip_id: string
@@ -82,6 +89,9 @@ export interface TimelineClipSnapshot {
   in_s: number
   volume: number | null
   rotation_deg: number
+  scale: number
+  x: number
+  y: number
   content?: string
   vault_id?: string
 }
