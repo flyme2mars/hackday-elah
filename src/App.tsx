@@ -62,6 +62,7 @@ import {
   commitClipRotation,
   measureClipForRotation,
   setClipRotation,
+  setClipTransform,
   wrapDegrees,
 } from './host/rotate.ts'
 import { timelineShortcut } from './host/shortcuts.ts'
@@ -293,6 +294,14 @@ function EditorShell() {
         rotationSize.current,
         { preview: true },
       )
+    } catch (error) {
+      setStatus(oneLine(error))
+    }
+  }
+
+  function onPreviewScale(clipId: string, scale: number) {
+    try {
+      setClipTransform(engine, clipId, { scale }, undefined, { preview: true })
     } catch (error) {
       setStatus(oneLine(error))
     }
@@ -534,9 +543,11 @@ function EditorShell() {
             anchor={menu.anchor}
             name={engine.findClip(menu.clipId)?.clip.name ?? 'Clip'}
             degrees={clipRotationDegrees(engine, menu.clipId)}
+            scale={engine.findClip(menu.clipId)?.clip.transform?.scale ?? 1}
             onClose={closeMenu}
             onFind={() => void onFindSimilar(menu.clipId)}
             onPreview={(degrees) => onPreviewRotation(menu.clipId, degrees)}
+            onPreviewScale={(scale) => onPreviewScale(menu.clipId, scale)}
             onCommit={() => commitClipRotation(engine)}
           />
         )}
@@ -664,21 +675,26 @@ function ClipMenu({
   anchor,
   name,
   degrees,
+  scale,
   onClose,
   onFind,
   onPreview,
+  onPreviewScale,
   onCommit,
 }: {
   anchor: PanelAnchor
   name: string
   degrees: number
+  scale: number
   onClose: () => void
   onFind: () => void
   onPreview: (degrees: number) => void
+  onPreviewScale: (scale: number) => void
   onCommit: () => void
 }) {
   const [angle, setAngle] = useState(degrees)
   const [text, setText] = useState(formatDegrees(degrees))
+  const [scaleText, setScaleText] = useState(formatScale(scale))
   const commitRef = useRef(onCommit)
 
   useEffect(() => {
@@ -694,6 +710,17 @@ function ClipMenu({
     setAngle(wrapped)
     setText(formatDegrees(wrapped))
     onPreview(wrapped)
+  }
+
+  function settleScale() {
+    const parsed = Number(scaleText)
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setScaleText(formatScale(scale))
+      return
+    }
+    setScaleText(formatScale(parsed))
+    onPreviewScale(parsed)
+    onCommit()
   }
 
   function settle(next: number) {
@@ -773,6 +800,31 @@ function ClipMenu({
             </button>
           ))}
         </div>
+        <div className="clip-rotate-head">
+          <label htmlFor="clip-scale">Scale</label>
+          <input
+            id="clip-scale"
+            type="number"
+            inputMode="decimal"
+            min={0.01}
+            step={0.1}
+            value={scaleText}
+            aria-label="Scale"
+            onChange={(event) => {
+              const value = event.target.value
+              setScaleText(value)
+              const parsed = Number(value)
+              if (value.trim() === '' || !Number.isFinite(parsed) || parsed <= 0) return
+              onPreviewScale(parsed)
+            }}
+            onBlur={() => settleScale()}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter') return
+              event.preventDefault()
+              settleScale()
+            }}
+          />
+        </div>
       </div>
       <button
         type="button"
@@ -788,6 +840,11 @@ function ClipMenu({
 function formatDegrees(degrees: number): string {
   if (!Number.isFinite(degrees)) return '0'
   return String(Math.round(degrees * 10) / 10)
+}
+
+function formatScale(scale: number): string {
+  if (!Number.isFinite(scale) || scale <= 0) return '1'
+  return String(Math.round(scale * 100) / 100)
 }
 
 function DebugSnapshot() {

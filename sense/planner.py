@@ -38,8 +38,10 @@ Allowed ops (exact names):
 - {"op":"update_text","clip_id":"...","content":"Hi"}
 - {"op":"crossfade","from_clip_id":"...","to_clip_id":"...","duration_s":0.5}
 - {"op":"set_transform","clip_id":"...","rotation":180}
+- {"op":"set_transform","clip_id":"...","scale":2}
+- {"op":"set_transform","clip_id":"...","x":0.5,"y":0.4}
 
-set_transform rotation is an absolute angle in degrees clockwise. The host stores radians. 180 turns the picture upside down. Use it only when the user asked to rotate.
+set_transform rotation is an absolute angle in degrees clockwise. The host stores radians. 180 turns the picture upside down. scale replaces the clip scale. Read the clip's current scale on the timeline. To zoom in, set scale higher than that number. x and y place the clip anchor on the stage, from 0 to 1. Omit any field you are not changing. Use set_transform for rotate, zoom, and scale. Do not search the library for those.
 
 When the prompt lists Selected clip_ids, those clips are selected. Prefer those ids for trim, set_transform, remove, and split. Cut means split. at_s is seconds on the timeline.
 
@@ -58,7 +60,7 @@ The user does not see your prose. They see the library and the timeline."""
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_vault",
-        "description": "Find footage in the library by meaning or, if embeddings are offline, by name. Returns real vault ids. Do not use this to trim, split, cut, move, remove, rotate, change volume, edit text, or crossfade. To place new media, search first, then add_clip.",
+        "description": "Find footage in the library by meaning or, if embeddings are offline, by name. Returns real vault ids. Do not use this to trim, split, cut, move, remove, rotate, zoom, scale, change volume, edit text, or crossfade. To place new media, search first, then add_clip.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -114,7 +116,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_ops",
-        "description": "Queue timeline edits for the host as one undo step. Call this for trim, split, move, remove, set_volume, add_text, update_text, crossfade, set_transform, and add_clip. set_transform rotation is degrees. Titles use add_text on T1. Never invent op names.",
+        "description": "Queue timeline edits for the host as one undo step. Call this for trim, split, move, remove, set_volume, add_text, update_text, crossfade, set_transform, and add_clip. set_transform rotation is degrees clockwise. set_transform scale replaces the clip scale. set_transform x and y are stage positions from 0 to 1. Titles use add_text on T1. Never invent op names.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -437,9 +439,10 @@ def _compact_timeline(timeline: dict[str, Any]) -> dict[str, Any]:
                 "duration_s": clip.get("duration_s"),
                 "content": clip.get("content"),
             }
-            rotation = clip.get("rotation_deg")
-            if isinstance(rotation, (int, float)) and not isinstance(rotation, bool):
-                row["rotation_deg"] = rotation
+            for key in ("rotation_deg", "scale", "x", "y"):
+                value = clip.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    row[key] = value
             clips.append(row)
         tracks.append({"track": track.get("alias") or track.get("name"), "kind": track.get("kind"), "clips": clips})
     return {"stage": timeline.get("stage"), "duration_s": timeline.get("duration_s"), "tracks": tracks}
@@ -1012,7 +1015,16 @@ def _validate_op(raw: object, allow: set[str]) -> dict[str, Any]:
     if name == "remove":
         return {"op": "remove", "clip_id": _req_str(raw, "clip_id")}
     if name == "set_transform":
-        return {"op": "set_transform", "clip_id": _req_str(raw, "clip_id"), "rotation": _req_num(raw, "rotation")}
+        op = {"op": "set_transform", "clip_id": _req_str(raw, "clip_id")}
+        _copy_optional(raw, op, ("rotation", "scale", "x", "y"), ())
+        if not any(key in op for key in ("rotation", "scale", "x", "y")):
+            raise OpError("set_transform needs rotation, scale, x, or y.")
+        if "scale" in op and op["scale"] <= 0:
+            raise OpError("scale must be positive.")
+        for key in ("x", "y"):
+            if key in op and not 0 <= op[key] <= 1:
+                raise OpError(f"{key} must be between 0 and 1.")
+        return op
     if name == "set_volume":
         volume = _req_num(raw, "volume")
         if volume < 0 or volume > 1:
@@ -1051,7 +1063,7 @@ def _copy_optional(raw: dict[str, Any], op: dict[str, Any], numbers: tuple[str, 
 
 _EDIT_TOKENS = (
     "trim", "cut", "split", "move", "remove", "delete", "rotate", "volume",
-    "mute", "text", "title", "caption", "subtitle", "export", "fade", "crossfade", "speed", "zoom",
+    "mute", "text", "title", "caption", "subtitle", "export", "fade", "crossfade", "speed", "zoom", "scale",
 )
 _FIND_TOKENS = ("find", "search", "look for", "show me", "footage", "clip of", "video of")
 _SELECTION_OPS = frozenset({"trim", "set_transform", "remove", "split"})

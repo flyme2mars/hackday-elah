@@ -5,7 +5,7 @@ import {
   type Transform,
 } from '@elah/editor'
 import { getLibraryAsset, vaultIdForSrc } from './library.ts'
-import { measureClipForRotation, setClipRotation, wrapDegrees } from './rotate.ts'
+import { measureClipForRotation, setClipTransform, wrapDegrees } from './rotate.ts'
 import {
   frameCountToSeconds,
   secondsToFrameCount,
@@ -383,7 +383,17 @@ function applyOne(
     }
     case 'set_transform': {
       const ref = resolveClip(engine, op.clip_id)
-      setClipRotation(engine, ref.id, { absoluteDegrees: op.rotation }, rotationSizes.get(ref.id))
+      setClipTransform(
+        engine,
+        ref.id,
+        {
+          ...(op.rotation !== undefined ? { absoluteDegrees: op.rotation } : {}),
+          ...(op.scale !== undefined ? { scale: op.scale } : {}),
+          ...(op.x !== undefined ? { x: op.x } : {}),
+          ...(op.y !== undefined ? { y: op.y } : {}),
+        },
+        rotationSizes.get(ref.id),
+      )
       const turned = mustClip(engine, ref.id)
       remember(op.clip_id, { id: ref.id, trackId: turned.trackId })
       return
@@ -594,6 +604,9 @@ function clipSnapshot(clip: Clip, fps: number): TimelineSnapshot['tracks'][numbe
     in_s: frameCountToSeconds(clip.sourceStartFrame, fps),
     volume: clip.volume ?? null,
     rotation_deg: wrapDegrees(((clip.transform?.rotation ?? 0) * 180) / Math.PI),
+    scale: clip.transform?.scale ?? 1,
+    x: clip.transform?.x ?? 0.5,
+    y: clip.transform?.y ?? 0.5,
     ...(clip.type === 'text' ? { content: clip.content ?? '' } : {}),
     ...(vaultId ? { vault_id: vaultId } : {}),
   }

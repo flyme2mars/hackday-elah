@@ -268,11 +268,7 @@ function coerceOp(raw: unknown, index: number): Op {
         volume: requiredNumber(row, 'volume'),
       }
     case 'set_transform':
-      return {
-        op: 'set_transform',
-        clip_id: requiredString(row, 'clip_id'),
-        rotation: requiredNumber(row, 'rotation'),
-      }
+      return coerceTransform(row)
     case 'update_text':
       return {
         op: 'update_text',
@@ -290,6 +286,32 @@ function coerceOp(raw: unknown, index: number): Op {
     default:
       throw new Error(`Op ${index} has an unknown type.`)
   }
+}
+
+function coerceTransform(row: Record<string, unknown>): Op {
+  const rotation = presentNumber(row, 'rotation')
+  const scale = presentNumber(row, 'scale')
+  const x = presentNumber(row, 'x')
+  const y = presentNumber(row, 'y')
+  if (rotation === undefined && scale === undefined && x === undefined && y === undefined) {
+    throw new Error('set_transform needs rotation, scale, x, or y.')
+  }
+  if (scale !== undefined && scale <= 0) throw new Error('scale must be positive.')
+  if (x !== undefined && (x < 0 || x > 1)) throw new Error('x must be between 0 and 1.')
+  if (y !== undefined && (y < 0 || y > 1)) throw new Error('y must be between 0 and 1.')
+  return {
+    op: 'set_transform',
+    clip_id: requiredString(row, 'clip_id'),
+    ...(rotation !== undefined ? { rotation } : {}),
+    ...(scale !== undefined ? { scale } : {}),
+    ...(x !== undefined ? { x } : {}),
+    ...(y !== undefined ? { y } : {}),
+  }
+}
+
+function presentNumber(row: Record<string, unknown>, key: string): number | undefined {
+  if (!Object.prototype.hasOwnProperty.call(row, key) || row[key] === undefined || row[key] === null) return undefined
+  return requiredNumber(row, key)
 }
 
 function requiredTrack(value: unknown): 'V1' | 'V2' | 'A1' | 'T1' {
