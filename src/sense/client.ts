@@ -1,5 +1,6 @@
 import { registerAssets, type LibraryAsset, type LibraryKind } from '../host/library.ts'
 import { fallbackLibrary } from '../host/samples.ts'
+import { failureStatusLine, isFetchFailure } from '../host/statusLine.ts'
 import type { Op, TimelineSnapshot } from '../host/types.ts'
 
 export interface SenseHits {
@@ -48,7 +49,7 @@ export async function runCommand(
   })
   const body = await readJson(response)
   if (!response.ok) {
-    throw new Error(noteFrom(body) || 'The sense worker rejected the command.')
+    throw new Error(noteFrom(body) || `Sense rejected the command (${response.status}).`)
   }
   const hits = flattenHits(body)
   registerAssets(hits)
@@ -59,6 +60,16 @@ export async function runCommand(
     ops: coerceOps(body.ops),
     opsLabel: typeof body.ops_label === 'string' && body.ops_label.trim() ? body.ops_label.trim() : 'Edit',
   }
+}
+
+export { commandStatusLine } from '../host/statusLine.ts'
+
+export function commandErrorLine(error: unknown): string {
+  return failureStatusLine(error, 'Command timed out. The planner did not answer.')
+}
+
+export function similarErrorLine(error: unknown): string {
+  return failureStatusLine(error, 'Similar search timed out.')
 }
 
 export async function findSimilar(
@@ -79,7 +90,7 @@ export async function findSimilar(
   })
   const body = await readJson(response)
   if (!response.ok) {
-    throw new Error(noteFrom(body) || 'Similar search failed.')
+    throw new Error(noteFrom(body) || `Similar search failed (${response.status}).`)
   }
   const hits = flattenHits(body)
   registerAssets(hits)
@@ -87,11 +98,7 @@ export async function findSimilar(
 }
 
 export function isWorkerDown(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  if (error.name === 'TypeError' || error.name === 'TimeoutError' || error.name === 'AbortError') {
-    return true
-  }
-  return /failed to fetch|network|econnrefused|proxy/i.test(error.message)
+  return isFetchFailure(error)
 }
 
 function toPayload(asset: LibraryAsset) {
@@ -117,7 +124,9 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
 }
 
 function noteFrom(body: Record<string, unknown>): string {
-  return typeof body.note === 'string' ? body.note.trim() : ''
+  if (typeof body.note === 'string' && body.note.trim()) return body.note.trim()
+  if (typeof body.detail === 'string' && body.detail.trim()) return body.detail.trim()
+  return ''
 }
 
 function readItems(body: unknown): unknown[] {
@@ -200,6 +209,9 @@ function coerceOp(raw: unknown, index: number): Op {
   if (!raw || typeof raw !== 'object') throw new Error(`Op ${index} is not an object.`)
   const row = raw as Record<string, unknown>
   const name = row.op
+  if (name === 'set_transform') {
+    throw new Error(`Op ${index}: rotate from the clip menu. set_transform is not applied by the host.`)
+  }
   if (typeof name !== 'string' || !OP_NAMES.has(name)) {
     throw new Error(`Op ${index} has an unknown type.`)
   }
