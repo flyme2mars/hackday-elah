@@ -5,8 +5,9 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
-from sense.catalog import Item
+from sense.catalog import MEDIA_EXT, Item, Vectors, normalize_kind, resolve_under
 
 _TOKEN = re.compile(r"[a-z0-9]+")
 
@@ -68,6 +69,40 @@ def infer_modality(query: str, explicit: object = None) -> str | None:
     if tokens & _VIDEO:
         return "video"
     return None
+
+
+def with_unjoined_index_items(root: Path, items: list[Item], vectors: Vectors | None) -> list[Item]:
+    if vectors is None or vectors.matrix is None or not vectors.ids:
+        return items
+    lookup = _build_lookup({item.id: item for item in items})
+    extras: list[Item] = []
+    seen = {item.id for item in items}
+    kinds = vectors.kinds
+    for index, raw_id in enumerate(vectors.ids):
+        if raw_id in seen or _resolve_item(raw_id, lookup) is not None:
+            continue
+        raw_kind = kinds[index] if kinds is not None and index < len(kinds) and kinds[index] else None
+        item = _item_for_index_id(root, raw_id, normalize_kind(raw_kind) if raw_kind else None)
+        if item is None or item.id in seen:
+            continue
+        seen.add(item.id)
+        extras.append(item)
+        for alias in _alias_keys(item.id):
+            lookup.setdefault(alias, item)
+    if not extras:
+        return items
+    return [*items, *extras]
+
+
+def _item_for_index_id(root: Path, vault_id: str, kind: str | None) -> Item | None:
+    path = resolve_under(root, vault_id)
+    if kind not in ("video", "audio", "image"):
+        suffix = path.suffix.lower() if path is not None else Path(vault_id).suffix.lower()
+        kind = MEDIA_EXT.get(suffix)
+    if kind not in ("video", "audio", "image"):
+        return None
+    name = Path(vault_id).stem or vault_id
+    return Item(vault_id, name, kind, path, None, path is not None)
 
 
 def matching_row(ids: list[str], vault_id: str) -> int | None:

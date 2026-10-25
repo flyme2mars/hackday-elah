@@ -15,8 +15,16 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from sense.catalog import Catalog, Item
-from sense.retrieve import CosineRank, cosine, infer_modality, lexical, matching_row, query_input
+from sense.catalog import LIBRARY_CAP, Catalog, Item
+from sense.retrieve import (
+    CosineRank,
+    cosine,
+    infer_modality,
+    lexical,
+    matching_row,
+    query_input,
+    with_unjoined_index_items,
+)
 
 INSTRUCTIONS = """You edit a timeline by calling tools. For trim, split, cut, move, remove, rotate, volume, text, crossfade, or other edits on clips already on the timeline, call apply_ops right away. Do not call search_vault for those. Search the library only when the user asks to find footage, or before you place new media that is not already on the timeline. After that search, place the clip with add_clip. Prefer vault_id values from search_vault or similar. You may also use a vault_id the user typed if it is in the library. Do not invent ids.
 
@@ -162,6 +170,7 @@ class TurnState:
     label: str | None = None
     mode: str | None = None
     notes: list[str] = field(default_factory=list)
+    low_score: bool = False
 
 
 def health(catalog: Catalog) -> dict[str, Any]:
@@ -201,7 +210,7 @@ def health(catalog: Catalog) -> dict[str, Any]:
 
 
 def library_payload(catalog: Catalog) -> dict[str, Any]:
-    items = [public_hit(item, {}, {}) for item in catalog.items[:300]]
+    items = [public_hit(item, {}, {}) for item in catalog.items[:LIBRARY_CAP]]
     return {
         "vault": str(catalog.root),
         "present": catalog.root.is_dir(),
@@ -293,11 +302,14 @@ async def run_command(catalog: Catalog, body: dict[str, Any]) -> dict[str, Any]:
     note = " ".join(dict.fromkeys(state.notes)).strip()
     planner_name = _planner_name(planner)
     if not note and not state.ops and not state.hits:
-        note = "No edits."
+        note = _LOW_SCORE_NOTE if state.low_score else "No edits."
     return _result(note, state.hits, state.ops, state.label, planner_name, state)
 
 
 _UPLOAD_SIMILAR_NOTE = "Find similar works on vault clips. Browser uploads are not on disk for EmbeddingGemma yet."
+_LOW_SCORE_NOTE = "Nothing confident enough."
+_DEFAULT_MIN_SCORE = 0.50
+_SEARCH_KINDS = ("video", "audio", "image")
 
 
 def _similar_needs_vault_file(catalog: Catalog, vault_id: str) -> bool:
@@ -320,7 +332,9 @@ async def run_similar(catalog: Catalog, body: dict[str, Any]) -> dict[str, Any]:
     found, mode = await _similar(state, vault_id, modality, k)
     _take_hits(state, found, mode)
     if not found:
-        if mode == "embedding":
+        if state.low_score:
+            note = _LOW_SCORE_NOTE
+        elif mode == "embedding":
             note = "No similar files."
         elif _vectors_ready(catalog):
             note = "No similar files. Embedding model is not loaded."
@@ -334,7 +348,7 @@ async def run_similar(catalog: Catalog, body: dict[str, Any]) -> dict[str, Any]:
 
 
 def thumb_path(catalog: Catalog, vault_id: str) -> Path | None:
-    item = catalog.by_id.get(vault_id)
+    item = catalog.resolve_media(vault_id)
     if item is None or not item.servable or item.path is None:
         return None
     if item.kind == "image":
@@ -358,7 +372,7 @@ def thumb_path(catalog: Catalog, vault_id: str) -> Path | None:
 
 
 def media_path(catalog: Catalog, vault_id: str) -> Path | None:
-    item = catalog.by_id.get(vault_id)
+    item = catalog.resolve_media(vault_id)
     if item is None or not item.servable or item.path is None:
         return None
     return item.path
@@ -389,7 +403,8 @@ def _state_from(catalog: Catalog, body: dict[str, Any]) -> TurnState:
             src_by_id[vault_id] = row["src"]
         if isinstance(row.get("duration_s"), (int, float)) and not isinstance(row.get("duration_s"), bool):
             duration_by_id[vault_id] = float(row["duration_s"])
-    corpus = catalog.items if catalog.items else visible
+    base = catalog.items if catalog.items else visible
+    corpus = with_unjoined_index_items(catalog.root, base, catalog.vectors)
     by_id = {item.id: item for item in corpus}
     # Ids the model may place: ones already on the timeline, plus later search and similar hits.
     allow = _timeline_vault_ids(timeline)
@@ -736,11 +751,30 @@ async def _search(state: TurnState, query: str, modality: str | None, k: int) ->
     kind = infer_modality(query, modality)
     vector = await _embed_text(query) if _vectors_ready(state.catalog) else None
     if kind is None:
-        found, mode = _rank(state, query, "video", k, vector)
-        if found:
-            return found, mode
-        return _rank(state, query, None, k, vector)
+        return _rank_each_kind(state, query, k, vector)
     return _rank(state, query, kind, k, vector)
+
+
+def _rank_each_kind(
+    state: TurnState,
+    query: str,
+    k: int,
+    vector: list[float] | None,
+) -> tuple[list[Item], str]:
+    found: list[Item] = []
+    embedding = False
+    dropped = False
+    for kind in _SEARCH_KINDS:
+        rows, mode = _rank(state, query, kind, k, vector)
+        if mode == "embedding":
+            embedding = True
+        if state.low_score:
+            dropped = True
+        found.extend(rows)
+    state.low_score = embedding and not found and dropped
+    if embedding:
+        return found, "embedding"
+    return found, "name"
 
 
 def _rank(state: TurnState, query: str, modality: str | None, k: int, vector: list[float] | None) -> tuple[list[Item], str]:
@@ -750,6 +784,7 @@ def _rank(state: TurnState, query: str, modality: str | None, k: int, vector: li
         covered = _covered_hits(state, ranked)
         if covered is not None:
             return covered, "embedding"
+    state.low_score = False
     found = lexical(state.corpus, query, modality, k)
     for item in found:
         state.scores.pop(item.id, None)
@@ -775,6 +810,7 @@ async def _similar(state: TurnState, vault_id: str, modality: str | None, k: int
             )
             if covered is not None:
                 return covered, "embedding"
+            state.low_score = False
         embedded = await _embed_media(source)
         if embedded is not None:
             covered = _covered_hits(
@@ -783,18 +819,39 @@ async def _similar(state: TurnState, vault_id: str, modality: str | None, k: int
             )
             if covered is not None:
                 return covered, "embedding"
+            state.low_score = False
+    state.low_score = False
     found = lexical(state.corpus, source.name, kind, k, {vault_id, source.id})
     for item in found:
         state.scores.pop(item.id, None)
     return found, "name"
 
 
+def min_cosine_score() -> float:
+    raw = os.environ.get("SENSE_MIN_SCORE")
+    if raw is None or not raw.strip():
+        return _DEFAULT_MIN_SCORE
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_MIN_SCORE
+    if not -1.0 <= value <= 1.0:
+        return _DEFAULT_MIN_SCORE
+    return value
+
+
 def _covered_hits(state: TurnState, ranked: CosineRank | None) -> list[Item] | None:
     if ranked is None or ranked.joined == 0:
         return None
+    minimum = min_cosine_score()
+    kept: list[Item] = []
     for item, score in ranked.hits:
+        if score < minimum:
+            continue
         state.scores[item.id] = score
-    return [item for item, _score in ranked.hits]
+        kept.append(item)
+    state.low_score = bool(ranked.hits) and not kept
+    return kept
 
 
 async def _frame(state: TurnState, vault_id: str, t_s: object) -> tuple[dict[str, Any], bytes | None]:
@@ -926,7 +983,12 @@ async def search_only(catalog: Catalog, body: dict[str, Any]) -> dict[str, Any]:
     found, mode = await _search(state, query, _modality(body.get("modality")), _k(body.get("k")))
     _take_hits(state, found, mode)
     if not found:
-        note = "No library match." if _vectors_ready(catalog) else "No library match. Embeddings are offline."
+        if state.low_score:
+            note = _LOW_SCORE_NOTE
+        elif _vectors_ready(catalog):
+            note = "No library match."
+        else:
+            note = "No library match. Embeddings are offline."
     elif mode == "name":
         note = _name_note(catalog)
     else:
