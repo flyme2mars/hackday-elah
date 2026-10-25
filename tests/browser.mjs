@@ -53,6 +53,9 @@ try {
     { hits: sampleHits },
   )
   await page.waitForFunction(() => document.querySelectorAll('[data-clip-type="video"]').length === 2)
+  assert.equal(await page.locator('.item-count').innerText(), '2')
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Flower/ }).count(), 1)
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Bunny/ }).count(), 1)
   await command('add title Hello at the start for 2 seconds', [{ op: 'add_text', clip_id: 'title1', content: 'Hello', start_s: 0, duration_s: 2 }])
   assert.equal((await snapshot()).tracks.find((t) => t.alias === 'T1').clips[0].content, 'Hello')
   await page.getByText('Title added.', { exact: true }).waitFor()
@@ -121,7 +124,34 @@ try {
   assert.equal(await page.locator('.media-search').count(), 0)
   assert.match(await page.locator('.status').innerText(), /Unknown clip/)
   assert.doesNotMatch(await page.locator('.status').innerText(), /clip menu/)
+  assert.equal(await page.locator('.item-count').innerText(), '2')
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Flower/ }).count(), 1)
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Bunny/ }).count(), 1)
+  const bedHit = { vault_id: 'bed.m4a', name: 'Bed', kind: 'audio', duration_s: 8, src: '/samples/bed.m4a' }
+  await command('find bed audio', [], { hits: { audio: [bedHit] } })
+  await page.locator('.media-search').getByRole('button', { name: /^Bed/ }).waitFor()
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Bed/ }).count(), 0)
+  await page.locator('.media-search').getByRole('button', { name: /^Bed/ }).click()
+  await page.locator('.media-library').getByRole('button', { name: /^Bed/ }).waitFor()
+  await page.waitForFunction(() => document.querySelectorAll('[data-clip-type="audio"]').length === 1)
+  await page.waitForFunction(() => !document.querySelector('.command-input').disabled)
+  assert.equal(await page.locator('.item-count').innerText(), '3')
+  await command('clear search', [])
+  assert.equal(await page.locator('.media-search').count(), 0)
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Bed/ }).count(), 1)
+  assert.equal(await page.locator('.item-count').innerText(), '3')
+  const videos = await page.locator('[data-clip-type="video"]').count()
+  await command('find flower again', [], { hits: { video: [flowerHit] } })
+  await page.locator('.media-search').getByRole('button', { name: /^Flower/ }).click()
+  await page.waitForFunction(
+    (count) => document.querySelectorAll('[data-clip-type="video"]').length === count + 1,
+    videos,
+  )
+  await page.waitForFunction(() => !document.querySelector('.command-input').disabled)
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Flower/ }).count(), 1)
+  assert.equal(await page.locator('.item-count').innerText(), '3')
   console.log('Rotate and zoom: angles and scale land on the clip from the command hit, and a failed rotate does not show vault hits')
+  console.log('Library: command hits and a placed search result stay after Search clears')
 } finally {
   await browser.close()
 }

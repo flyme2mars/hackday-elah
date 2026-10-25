@@ -53,6 +53,7 @@ import { canExportMp4, exportErrorLine, exportMp4 } from './host/exportMp4.ts'
 import { clipStatus } from './host/statusLine.ts'
 import {
   listLibraryAssets,
+  mergeLibraryAssets,
   type LibraryAsset,
 } from './host/library.ts'
 import { ensureImported, importLocalFiles } from './host/media.ts'
@@ -192,6 +193,7 @@ function EditorShell() {
     setBusy(true)
     try {
       await placeAsset(engine, asset)
+      setLibrary((current) => mergeLibraryAssets(current, [asset]))
       fitTimeline()
       setStatus('Done')
     } catch (error) {
@@ -214,6 +216,16 @@ function EditorShell() {
       if (result.ops.length > 0) {
         setStatus('Editing…')
         await applyOps(engine, result.ops, result.opsLabel)
+        const hitsById = new Map(result.hits.map((hit) => [hit.vaultId, hit]))
+        const placed: LibraryAsset[] = []
+        for (const op of result.ops) {
+          if (op.op !== 'add_clip') continue
+          const hit = hitsById.get(op.vault_id)
+          if (hit) placed.push(hit)
+        }
+        if (placed.length > 0) {
+          setLibrary((current) => mergeLibraryAssets(current, placed))
+        }
         fitTimeline()
       }
       setResults(result.hits.length > 0 ? result.hits : null)

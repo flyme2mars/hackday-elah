@@ -126,6 +126,10 @@ try {
   await page.waitForFunction(
     () => document.querySelectorAll('[data-clip-type="video"]').length === 3,
   )
+  assert.equal(await page.locator('.item-count').innerText(), '2')
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Flower/ }).count(), 1)
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Bunny/ }).count(), 1)
+  assert.equal(await page.locator('.media-library').getByRole('button', { name: /^Bed/ }).count(), 0)
   await page.getByRole('button', { name: 'Fit timeline', exact: true }).click()
   const clips = page.locator('[data-clip-type="video"]')
   const lastClipId = await clips.nth(2).getAttribute('data-clip-id')

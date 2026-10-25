@@ -30,6 +30,20 @@ export function listLibraryAssets(): LibraryAsset[] {
   return [...assets.values()]
 }
 
+export function mergeLibraryAssets(
+  current: readonly LibraryAsset[],
+  incoming: readonly LibraryAsset[],
+): LibraryAsset[] {
+  const seen = new Set(current.map((item) => item.vaultId))
+  const added: LibraryAsset[] = []
+  for (const item of incoming) {
+    if (seen.has(item.vaultId)) continue
+    seen.add(item.vaultId)
+    added.push(item)
+  }
+  return [...current, ...added]
+}
+
 export function vaultIdForSrc(src: string | undefined): string | null {
   if (!src) return null
   for (const key of srcKeys(src)) {
