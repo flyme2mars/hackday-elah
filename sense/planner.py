@@ -85,7 +85,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "similar",
-        "description": "Find library items near a known vault id or path.",
+        "description": "Find video, audio, and image near a known vault id. Describe that item, then search every kind.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -308,8 +308,10 @@ async def run_command(catalog: Catalog, body: dict[str, Any]) -> dict[str, Any]:
 
 _UPLOAD_SIMILAR_NOTE = "Find similar works on vault clips. Browser uploads are not on disk for EmbeddingGemma yet."
 _LOW_SCORE_NOTE = "Nothing confident enough."
+_DESCRIBE_FAIL_NOTE = "Could not describe this clip."
 _DEFAULT_MIN_SCORE = 0.50
 _SEARCH_KINDS = ("video", "audio", "image")
+_DESCRIBE_STILL_LIMIT = 1_500_000
 
 
 def _similar_needs_vault_file(catalog: Catalog, vault_id: str) -> bool:
@@ -331,20 +333,7 @@ async def run_similar(catalog: Catalog, body: dict[str, Any]) -> dict[str, Any]:
     k = _k(body.get("k"))
     found, mode = await _similar(state, vault_id, modality, k)
     _take_hits(state, found, mode)
-    if not found:
-        if state.low_score:
-            note = _LOW_SCORE_NOTE
-        elif mode == "embedding":
-            note = "No similar files."
-        elif _vectors_ready(catalog):
-            note = "No similar files. Embedding model is not loaded."
-        else:
-            note = "No similar files. Embeddings are offline."
-    elif mode == "name":
-        note = _name_note(catalog)
-    else:
-        note = ""
-    return {"note": note, "mode": mode, "hits": _classify(state)}
+    return {"note": _similar_note(state, catalog, found, mode), "mode": mode, "hits": _classify(state)}
 
 
 def thumb_path(catalog: Catalog, vault_id: str) -> Path | None:
@@ -791,40 +780,338 @@ def _rank(state: TurnState, query: str, modality: str | None, k: int, vector: li
     return found, "name"
 
 
+def _similar_note(state: TurnState, catalog: Catalog, found: list[Item], mode: str) -> str:
+    if not found:
+        if state.low_score:
+            primary = _LOW_SCORE_NOTE
+        elif mode == "embedding":
+            primary = "No similar files."
+        elif _vectors_ready(catalog):
+            primary = "No similar files. Embedding model is not loaded."
+        else:
+            primary = "No similar files. Embeddings are offline."
+    elif mode == "name":
+        primary = _name_note(catalog)
+    else:
+        primary = ""
+    notes: list[str] = []
+    for note in state.notes:
+        if note and note not in notes and note != primary:
+            notes.append(note)
+    if primary:
+        notes.append(primary)
+    return " ".join(notes)
+
+
 async def _similar(state: TurnState, vault_id: str, modality: str | None, k: int) -> tuple[list[Item], str]:
     source = state.by_id.get(vault_id) or state.catalog.item_for_tool(vault_id)
     if source is None:
         state.notes.append("That clip is not in the library.")
         return [], "name"
-    kind = modality if modality in ("video", "audio", "image") else source.kind
-    vectors = state.catalog.vectors
-    if _vectors_ready(state.catalog) and vectors is not None and vectors.matrix is not None:
-        row = matching_row(vectors.ids, vault_id)
-        if row is None:
-            row = matching_row(vectors.ids, source.id)
-        if row is not None:
-            vector = [float(value) for value in vectors.matrix[row]]
-            covered = _covered_hits(
-                state,
-                cosine(vectors.ids, vectors.matrix, vector, state.by_id, kind, k, {vault_id, source.id}),
-            )
-            if covered is not None:
-                return covered, "embedding"
-            state.low_score = False
-        embedded = await _embed_media(source)
-        if embedded is not None:
-            covered = _covered_hits(
-                state,
-                cosine(vectors.ids, vectors.matrix, embedded, state.by_id, kind, k, {vault_id, source.id}),
-            )
-            if covered is not None:
-                return covered, "embedding"
-            state.low_score = False
+    kinds = (modality,) if modality in _SEARCH_KINDS else _SEARCH_KINDS
+    exclude = {vault_id, source.id}
+    description, describe_note = await _describe_media(state, source)
+    if describe_note and describe_note not in state.notes:
+        state.notes.append(describe_note)
+    text_vector = await _embed_text(description) if description and _vectors_ready(state.catalog) else None
+    neighbor = await _neighbor_vector(state, vault_id, source)
+    found = _merge_similar(state, [text_vector, neighbor], kinds, k, exclude)
+    if found is not None:
+        return found, "embedding"
+    query = description or source.name
+    rows: list[Item] = []
+    seen: set[str] = set()
+    for kind in kinds:
+        for item in lexical(state.corpus, query, kind, k, exclude):
+            if item.id in seen:
+                continue
+            seen.add(item.id)
+            state.scores.pop(item.id, None)
+            rows.append(item)
     state.low_score = False
-    found = lexical(state.corpus, source.name, kind, k, {vault_id, source.id})
-    for item in found:
-        state.scores.pop(item.id, None)
-    return found, "name"
+    return rows, "name"
+
+
+async def _describe_media(state: TurnState, source: Item) -> tuple[str | None, str | None]:
+    """Ask Gemma for a search line. (None, None) when no planner is configured."""
+    try:
+        planner = await _choose_planner()
+    except Exception:
+        return None, _DESCRIBE_FAIL_NOTE
+    if planner is None:
+        return None, None
+    try:
+        image = _describe_still(state.catalog, source) if source.kind in ("video", "image") else None
+        hint = await _transcript_hint(state, source) if source.kind == "audio" else None
+        prompt = _describe_prompt(source, hint)
+    except Exception:
+        return None, _DESCRIBE_FAIL_NOTE
+    seen: set[object] = set()
+    while planner is not None and planner not in seen:
+        seen.add(planner)
+        try:
+            text = _clean_description(await _describe_once(planner, prompt, image))
+            if text:
+                return text, None
+        except Exception:
+            pass
+        planner, _busy = _after_busy(planner)
+    return None, _DESCRIBE_FAIL_NOTE
+
+
+def _describe_prompt(source: Item, hint: str | None) -> str:
+    lines = [
+        "Write one search line for this library item.",
+        "Name the subject, the place, and the action.",
+        "Plain words only.",
+        f"File name: {source.name}",
+        f"Kind: {source.kind}",
+    ]
+    if hint:
+        lines.append(hint)
+    return "\n".join(lines)
+
+
+def _clean_description(text: str) -> str | None:
+    line = " ".join(text.split()).strip().strip("\"'`")
+    if len(line) > 240:
+        trimmed = line[:240].rsplit(" ", 1)[0].strip()
+        line = trimmed or line[:240].strip()
+    if len(line) < 3:
+        return None
+    return line
+
+
+def _describe_still(catalog: Catalog, source: Item) -> tuple[bytes, str] | None:
+    path = thumb_path(catalog, source.id)
+    if path is None:
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if not data:
+        return None
+    suffix = path.suffix.lower()
+    mime = {".png": "image/png", ".webp": "image/webp"}.get(suffix, "image/jpeg")
+    if len(data) <= _DESCRIBE_STILL_LIMIT:
+        return data, mime
+    shrunk = _shrink_still(catalog, source.id, path)
+    if not shrunk:
+        return None
+    return shrunk, "image/jpeg"
+
+
+def _shrink_still(catalog: Catalog, vault_id: str, path: Path) -> bytes | None:
+    if shutil.which("ffmpeg") is None:
+        return None
+    cache = catalog.repo / "sense" / ".cache" / "thumbs"
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    dest = cache / f"{_safe_name(vault_id)}-describe.jpg"
+    proc = subprocess.run(
+        ["ffmpeg", "-y", "-i", str(path), "-frames:v", "1", "-vf", "scale=512:-2", "-q:v", "5", str(dest)],
+        capture_output=True,
+        timeout=20,
+    )
+    if proc.returncode != 0 or not dest.is_file():
+        dest.unlink(missing_ok=True)
+        return None
+    try:
+        data = dest.read_bytes()
+    except OSError:
+        return None
+    if not data or len(data) > _DESCRIBE_STILL_LIMIT:
+        return None
+    return data
+
+
+async def _transcript_hint(state: TurnState, source: Item) -> str | None:
+    if source.path is None:
+        return None
+    try:
+        result = await _transcribe(state, source.id, None, None)
+    except Exception:
+        return None
+    text = result.get("text") if isinstance(result, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return f"Transcript: {' '.join(text.split())[:800]}"
+
+
+async def _describe_once(planner: object, prompt: str, image: tuple[bytes, str] | None) -> str:
+    if planner is _gemini_turn or planner is _vertex_turn:
+        return await _describe_generate(planner, prompt, image)
+    if planner is _do_turn or planner is _e4b_turn:
+        return await _describe_chat(planner, prompt, image)
+    raise RuntimeError("No describe planner.")
+
+
+def _describe_parts(prompt: str, image: tuple[bytes, str] | None) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = [{"text": prompt}]
+    if image is not None:
+        data, mime = image
+        parts.append({"inlineData": {"mimeType": mime, "data": _b64(data)}})
+    return parts
+
+
+def _describe_user_content(prompt: str, image: tuple[bytes, str] | None) -> str | list[dict[str, Any]]:
+    if image is None:
+        return prompt
+    data, mime = image
+    return [
+        {"type": "text", "text": prompt},
+        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{_b64(data)}"}},
+    ]
+
+
+async def _describe_generate(planner: object, prompt: str, image: tuple[bytes, str] | None) -> str:
+    if planner is _gemini_turn:
+        key = _gemini_api_key()
+        if not key:
+            raise RuntimeError("Gemini API key is not configured.")
+        url = _gemini_url()
+        headers = {"x-goog-api-key": key}
+        busy = (402, 429, 503)
+    else:
+        token = _vertex_token()
+        if not token:
+            raise RuntimeError("Vertex credentials are not available.")
+        url = _vertex_url()
+        headers = {"Authorization": f"Bearer {token}"}
+        busy = (429, 503)
+    payload = {
+        "contents": [{"role": "user", "parts": _describe_parts(prompt, image)}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 120},
+    }
+    response = await _post_json(url, headers, payload)
+    if response.status_code in busy:
+        raise VertexBusy(f"describe returned {response.status_code}.")
+    if response.status_code >= 400:
+        raise RuntimeError(f"describe returned {response.status_code}.")
+    return _gemini_response_text(response.json())
+
+
+async def _describe_chat(planner: object, prompt: str, image: tuple[bytes, str] | None) -> str:
+    if planner is _do_turn:
+        key = _do_api_key()
+        if not key:
+            raise RuntimeError("DigitalOcean model key is not configured.")
+        url = do_url()
+        headers = {"Authorization": f"Bearer {key}"}
+        model = _do_model()
+        busy = _DO_BUSY
+    else:
+        url = e4b_url()
+        headers = {}
+        model = os.environ.get("SENSE_E4B_MODEL", "gemma-e4b")
+        busy = frozenset()
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": _describe_user_content(prompt, image)}],
+        "temperature": 0.2,
+        "max_tokens": 120,
+    }
+    response = await _post_json(url, headers, payload)
+    if response.status_code in busy:
+        raise VertexBusy(f"describe returned {response.status_code}.")
+    if response.status_code >= 400:
+        raise RuntimeError(f"describe returned {response.status_code}.")
+    return _openai_response_text(response.json())
+
+
+async def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any]) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=40) as client:
+        return await client.post(url, headers=headers, json=payload)
+
+
+def _gemini_response_text(data: object) -> str:
+    if not isinstance(data, dict):
+        return ""
+    candidates = data.get("candidates")
+    if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+        return ""
+    content = candidates[0].get("content")
+    parts = content.get("parts") if isinstance(content, dict) else None
+    if not isinstance(parts, list):
+        return ""
+    texts = [part["text"] for part in parts if isinstance(part, dict) and isinstance(part.get("text"), str)]
+    return " ".join(texts).strip()
+
+
+def _openai_response_text(data: object) -> str:
+    if not isinstance(data, dict):
+        return ""
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return ""
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        return ""
+    return _content_text(message.get("content")).strip()
+
+
+async def _neighbor_vector(state: TurnState, vault_id: str, source: Item) -> list[float] | None:
+    vectors = state.catalog.vectors
+    if not _vectors_ready(state.catalog) or vectors is None or vectors.matrix is None:
+        return None
+    row = matching_row(vectors.ids, vault_id)
+    if row is None:
+        row = matching_row(vectors.ids, source.id)
+    if row is not None:
+        return [float(value) for value in vectors.matrix[row]]
+    return await _embed_media(source)
+
+
+def _merge_similar(
+    state: TurnState,
+    query_vectors: list[list[float] | None],
+    kinds: tuple[str, ...],
+    k: int,
+    exclude: set[str],
+) -> list[Item] | None:
+    """Per-kind top hits above the search floor. None when no query vector joined the index."""
+    vectors = state.catalog.vectors
+    if vectors is None or vectors.matrix is None:
+        return None
+    if all(vector is None for vector in query_vectors):
+        return None
+    best: dict[str, tuple[Item, float]] = {}
+    ran = False
+    saw_raw = False
+    minimum = min_cosine_score()
+    for vector in query_vectors:
+        if vector is None:
+            continue
+        for kind in kinds:
+            ranked = cosine(vectors.ids, vectors.matrix, vector, state.by_id, kind, k, exclude)
+            if ranked is None or ranked.joined == 0:
+                continue
+            ran = True
+            if ranked.hits:
+                saw_raw = True
+            for item, score in ranked.hits:
+                if score < minimum:
+                    continue
+                previous = best.get(item.id)
+                if previous is None or score > previous[1]:
+                    best[item.id] = (item, score)
+    if not ran:
+        return None
+    grouped: dict[str, list[tuple[Item, float]]] = {kind: [] for kind in kinds}
+    for item, score in best.values():
+        grouped.setdefault(item.kind, []).append((item, score))
+    found: list[Item] = []
+    for kind in kinds:
+        rows = grouped.get(kind) or []
+        rows.sort(key=lambda pair: (-pair[1], pair[0].name.lower(), pair[0].id))
+        for item, score in rows[:k]:
+            state.scores[item.id] = score
+            found.append(item)
+    state.low_score = saw_raw and not found
+    return found
 
 
 def min_cosine_score() -> float:

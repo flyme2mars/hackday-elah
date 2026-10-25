@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -96,6 +97,51 @@ def _scores(result: dict, kind: str) -> list[float]:
     return [hit["score"] for hit in result["hits"][kind]]
 
 
+def _no_describe():
+    async def describe(state: object, source: object) -> tuple[None, None]:
+        del state, source
+        return None, None
+
+    return patch("sense.planner._describe_media", describe)
+
+
+async def _choose_do():
+    from sense.planner import _do_turn
+
+    return _do_turn
+
+
+def _tiny_video(root: Path) -> Path:
+    dest = root / "anchor.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=64x64:d=2", "-r", "10", str(dest)],
+        check=True,
+        capture_output=True,
+    )
+    return dest
+
+
+class _ScriptClient:
+    script: list[tuple[int, dict]] = []
+    calls: list[dict] = []
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+    async def __aenter__(self) -> _ScriptClient:
+        return self
+
+    async def __aexit__(self, *args: object) -> bool:
+        del args
+        return False
+
+    async def post(self, url: str, json: dict | None = None, headers: dict | None = None, **kwargs: object) -> _Response:
+        del kwargs
+        _ScriptClient.calls.append({"url": url, "json": json, "headers": headers})
+        status, payload = _ScriptClient.script.pop(0)
+        return _Response(status, payload)
+
+
 class _EmbedClient:
     payloads: list[dict] = []
 
@@ -181,7 +227,8 @@ class RetrieveRankingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["hits"], {"video": [], "audio": [], "image": []})
 
     async def test_similar_joins_extension_alias_for_c2339(self) -> None:
-        result = await run_similar(alias_catalog(), {"vault_id": "video/c2339.mp4"})
+        with _no_describe():
+            result = await run_similar(alias_catalog(), {"vault_id": "video/c2339.mp4"})
         self.assertEqual(result["mode"], "embedding")
         self.assertEqual(_ids(result, "video"), ["video/beach.mp4"])
         self.assertGreater(_scores(result, "video")[0], 0.9)
@@ -297,7 +344,8 @@ class RetrieveRankingTest(unittest.IsolatedAsyncioTestCase):
         beach = _item("video/beach.mp4", "Beach", "video")
         shore = _item("video/shore.mp4", "beach shore", "video")
         loaded = Catalog(Path("/tmp"), Path("/tmp"), [beach, shore], None, None, False)
-        result = await run_similar(loaded, {"vault_id": "video/beach.mp4"})
+        with _no_describe():
+            result = await run_similar(loaded, {"vault_id": "video/beach.mp4"})
         self.assertEqual(result["mode"], "name")
         self.assertEqual(_ids(result, "video"), ["video/shore.mp4"])
         self.assertNotIn("score", result["hits"]["video"][0])
@@ -330,7 +378,8 @@ class RetrieveRankingTest(unittest.IsolatedAsyncioTestCase):
         near = _item("video/near.mp4", "near", "video")
         ocean = _item("video/ocean.mp4", "ocean", "video")
         loaded = _loaded([anchor, near, ocean], [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
-        result = await run_similar(loaded, {"vault_id": "video/anchor.mp4"})
+        with _no_describe():
+            result = await run_similar(loaded, {"vault_id": "video/anchor.mp4"})
         self.assertEqual(result["mode"], "embedding")
         self.assertEqual(_ids(result, "video"), ["video/near.mp4"])
         self.assertIn("score", result["hits"]["video"][0])
@@ -340,7 +389,8 @@ class RetrieveRankingTest(unittest.IsolatedAsyncioTestCase):
         anchor = _item("video/anchor.mp4", "anchor", "video")
         ocean = _item("video/ocean.mp4", "ocean", "video")
         loaded = _loaded([anchor, ocean], [[1.0, 0.0], [0.0, 1.0]])
-        result = await run_similar(loaded, {"vault_id": "video/anchor.mp4"})
+        with _no_describe():
+            result = await run_similar(loaded, {"vault_id": "video/anchor.mp4"})
         self.assertEqual(result["mode"], "embedding")
         self.assertEqual(result["hits"], {"video": [], "audio": [], "image": []})
         self.assertEqual(result["note"], "Nothing confident enough.")
@@ -403,6 +453,124 @@ class RetrieveRankingTest(unittest.IsolatedAsyncioTestCase):
         loaded = Catalog(Path("/tmp"), Path("/tmp"), items, None, None, True)
         payload = library_payload(loaded)
         self.assertEqual(len(payload["items"]), LIBRARY_CAP)
+
+    async def test_similar_without_modality_keeps_each_confident_kind(self) -> None:
+        anchor = _item("video/anchor.mp4", "anchor", "video")
+        near = _item("video/near.mp4", "near", "video")
+        audio = _item("audio/near.wav", "near", "audio")
+        image = _item("stills/flat.jpg", "flat", "image")
+        loaded = _loaded(
+            [anchor, near, audio, image],
+            [[1.0, 0.0], [0.95, 0.05], [0.9, 0.1], [0.0, 1.0]],
+        )
+        with _no_describe():
+            result = await run_similar(loaded, {"vault_id": "video/anchor.mp4"})
+            audio_only = await run_similar(loaded, {"vault_id": "video/anchor.mp4", "modality": "audio"})
+        self.assertEqual(result["mode"], "embedding")
+        self.assertEqual(result["note"], "")
+        self.assertEqual(_ids(result, "video"), ["video/near.mp4"])
+        self.assertEqual(_ids(result, "audio"), ["audio/near.wav"])
+        self.assertEqual(result["hits"]["image"], [])
+        self.assertGreater(_scores(result, "video")[0], 0.5)
+        self.assertGreater(_scores(result, "audio")[0], 0.5)
+        self.assertEqual(_ids(audio_only, "audio"), ["audio/near.wav"])
+        self.assertEqual(audio_only["hits"]["video"], [])
+        self.assertEqual(audio_only["hits"]["image"], [])
+
+    async def test_describe_merges_text_hits_with_neighbors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            video = _tiny_video(root)
+            anchor = Item("video/anchor.mp4", "anchor", "video", video, 1.0, True)
+            neighbor = _item("video/neighbor.mp4", "neighbor", "video")
+            phone = _item("video/phone.mp4", "phone", "video")
+            ring = _item("audio/ring.wav", "ring", "audio")
+            desk = _item("stills/desk.jpg", "desk", "image")
+            items = [anchor, neighbor, phone, ring, desk]
+            matrix = np.asarray(
+                [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], [0.0, 1.0]],
+                dtype="float32",
+            )
+            loaded = Catalog(
+                root,
+                root,
+                items,
+                None,
+                Vectors([item.id for item in items], matrix, [item.id for item in items]),
+                False,
+            )
+            seen: dict[str, str] = {}
+
+            async def embed(text: str) -> list[float]:
+                seen["text"] = text
+                return [0.0, 1.0]
+
+            _ScriptClient.script = [
+                (503, {}),
+                (200, {"candidates": [{"content": {"parts": [{"text": "a ringing phone on a wooden desk"}]}}]}),
+            ]
+            _ScriptClient.calls = []
+            with (
+                patch("sense.planner._choose_planner", _choose_do),
+                patch("sense.planner._embed_text", embed),
+                patch("sense.planner.httpx.AsyncClient", _ScriptClient),
+                patch.dict(os.environ, {"DO_MODEL_KEY": "test-do", "GEMINI_API_KEY": "test-gemini"}, clear=False),
+            ):
+                result = await run_similar(loaded, {"vault_id": "video/anchor.mp4"})
+        self.assertEqual(result["mode"], "embedding")
+        self.assertEqual(result["note"], "")
+        self.assertEqual(_ids(result, "video"), ["video/neighbor.mp4", "video/phone.mp4"])
+        self.assertEqual(_ids(result, "audio"), ["audio/ring.wav"])
+        self.assertEqual(_ids(result, "image"), ["stills/desk.jpg"])
+        self.assertIn("ringing phone", seen["text"])
+        self.assertGreaterEqual(len(_ScriptClient.calls), 2)
+        self.assertIn("inference.do-ai.run", _ScriptClient.calls[0]["url"])
+        self.assertIn("generativelanguage.googleapis.com", _ScriptClient.calls[1]["url"])
+        self.assertNotIn("tools", _ScriptClient.calls[1]["json"])
+        parts = _ScriptClient.calls[1]["json"]["contents"][0]["parts"]
+        inline = [part["inlineData"] for part in parts if "inlineData" in part]
+        self.assertEqual(len(inline), 1)
+        self.assertEqual(inline[0]["mimeType"], "image/jpeg")
+        self.assertTrue(inline[0]["data"])
+        self.assertEqual(_ScriptClient.calls[1]["headers"]["x-goog-api-key"], "test-gemini")
+        do_content = _ScriptClient.calls[0]["json"]["messages"][0]["content"]
+        self.assertIsInstance(do_content, list)
+        self.assertTrue(any(part.get("type") == "image_url" for part in do_content))
+
+    async def test_describe_failure_keeps_neighbor_hits(self) -> None:
+        anchor = _item("video/anchor.mp4", "anchor", "video")
+        near = _item("video/near.mp4", "near", "video")
+        loaded = _loaded([anchor, near], [[1.0, 0.0], [1.0, 0.0]])
+        _ScriptClient.script = [(503, {}), (500, {}), (500, {})]
+        _ScriptClient.calls = []
+        with (
+            patch("sense.planner._choose_planner", _choose_do),
+            patch("sense.planner.httpx.AsyncClient", _ScriptClient),
+            patch.dict(os.environ, {"DO_MODEL_KEY": "test-do", "GEMINI_API_KEY": "test-gemini"}, clear=False),
+        ):
+            result = await run_similar(loaded, {"vault_id": "video/anchor.mp4"})
+        self.assertEqual(result["mode"], "embedding")
+        self.assertEqual(_ids(result, "video"), ["video/near.mp4"])
+        self.assertIn("score", result["hits"]["video"][0])
+        self.assertIn("Could not describe this clip.", result["note"])
+        self.assertGreaterEqual(len(_ScriptClient.calls), 2)
+
+    async def test_description_names_match_when_embeddings_are_offline(self) -> None:
+        anchor = _item("video/anchor.mp4", "anchor", "video")
+        waves = _item("audio/waves.m4a", "ocean waves", "audio")
+        loaded = Catalog(Path("/tmp"), Path("/tmp"), [anchor, waves], None, None, False)
+
+        async def describe(state: object, source: object) -> tuple[str, None]:
+            del state, source
+            return "ocean waves", None
+
+        with patch("sense.planner._describe_media", describe):
+            result = await run_similar(loaded, {"vault_id": "video/anchor.mp4"})
+        self.assertEqual(result["mode"], "name")
+        self.assertEqual(_ids(result, "audio"), ["audio/waves.m4a"])
+        self.assertEqual(result["hits"]["video"], [])
+        self.assertNotIn("score", result["hits"]["audio"][0])
+        self.assertIn("Embeddings are offline", result["note"])
 
 
 class PlannerSeparationTest(unittest.IsolatedAsyncioTestCase):
