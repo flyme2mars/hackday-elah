@@ -93,6 +93,58 @@ export function isWorkerDown(error: unknown): boolean {
   return isFetchFailure(error)
 }
 
+const DICTATION_TIMEOUT_MS = 60_000
+
+/** Sense answered, but the clip itself was rejected. Parakeet being down is `reachable: false`. */
+export class DictationRequestError extends Error {
+  readonly reachable: boolean
+
+  constructor(message: string, reachable: boolean) {
+    super(message)
+    this.name = 'DictationRequestError'
+    this.reachable = reachable
+  }
+}
+
+export async function transcribeCommand(audio: Blob, signal?: AbortSignal): Promise<string> {
+  const type = audio.type.trim() || 'audio/webm'
+  let response: Response
+  try {
+    response = await fetch('/api/v1/dictation', {
+      method: 'POST',
+      headers: { 'content-type': type },
+      body: audio,
+      signal: dictationSignal(signal),
+    })
+  } catch (error) {
+    if (isAbortError(error)) throw error
+    throw new DictationRequestError('Sense worker is not running.', false)
+  }
+  const body = await readJson(response)
+  if (!response.ok) {
+    const down = response.status === 502 || response.status === 503 || response.status === 504
+    const detail = noteFrom(body) || `Transcription failed (${response.status}).`
+    throw new DictationRequestError(down ? 'Parakeet is not loaded.' : detail, !down)
+  }
+  const text = body.text ?? body.transcript
+  if (typeof text !== 'string') {
+    throw new DictationRequestError('Parakeet returned no text.', true)
+  }
+  return text.trim()
+}
+
+function dictationSignal(signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(DICTATION_TIMEOUT_MS)
+  if (!signal) return timeout
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([signal, timeout])
+  return signal
+}
+
+function isAbortError(error: unknown): boolean {
+  if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) return true
+  return false
+}
+
 function toPayload(asset: LibraryAsset) {
   return {
     vault_id: asset.vaultId,

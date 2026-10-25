@@ -144,6 +144,25 @@ test('dictationMode reports arming as listening', () => {
   assert.equal(dictationMode({ phase: 'unsupported' }), 'denied')
 })
 
+test('finalize then accept returns to idle, and a miss can fall back', () => {
+  const listening = run([{ type: 'arm' }, { type: 'started' }])
+  const finalizing = dictationReducer(listening, { type: 'finalize' })
+  assert.deepEqual(finalizing, { phase: 'finalizing' })
+  assert.equal(dictationMode(finalizing), 'listening')
+  assert.equal(dictationNotice(finalizing), 'Transcribing…')
+  assert.equal(dictateIntent(finalizing), 'stop')
+  assert.deepEqual(dictationReducer(finalizing, { type: 'accept' }), { phase: 'idle' })
+  const fallback = dictationReducer(finalizing, { type: 'fallback' })
+  assert.equal(dictationNotice(fallback), 'Browser speech. Parakeet did not answer.')
+  assert.equal(dictationMode(fallback), 'listening')
+  const failed = dictationReducer(finalizing, { type: 'reject', message: 'Parakeet is not loaded.' })
+  assert.deepEqual(failed, { phase: 'failed', message: 'Parakeet is not loaded.' })
+  assert.equal(dictationMode(failed), 'idle')
+  assert.equal(dictateIntent(failed), 'start')
+  assert.deepEqual(dictationReducer(failed, { type: 'arm' }), { phase: 'arming' })
+  assert.deepEqual(dictationReducer(failed, { type: 'halt' }), { phase: 'idle' })
+})
+
 test('dictationNotice and dictationLabel use the mic copy', () => {
   assert.equal(dictationNotice(IDLE_DICTATION), null)
   assert.equal(dictationNotice({ phase: 'arming' }), null)

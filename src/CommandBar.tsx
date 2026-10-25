@@ -25,6 +25,11 @@ export default function CommandBar({
 }: CommandBarProps) {
   const listening = voice.state === 'listening'
   const denied = voice.state === 'denied'
+  const commandStatus = status.trim()
+  const listeningStatus =
+    commandStatus && commandStatus !== 'Ready' && !commandStatus.startsWith('Listening')
+      ? commandStatus
+      : 'Listening… Speak your command.'
   const voiceLabel = listening
     ? 'Stop listening'
     : denied
@@ -33,7 +38,7 @@ export default function CommandBar({
         ? 'Voice input unavailable'
         : 'Start voice input'
   const voiceStatus = listening
-    ? 'Listening… Speak your command.'
+    ? listeningStatus
     : denied
       ? 'Microphone access is blocked. Allow it in your browser settings, then retry.'
       : voice.state === 'unavailable'

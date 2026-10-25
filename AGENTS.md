@@ -82,6 +82,7 @@ Find similar is the timeline context menu, then `POST /similar` with `vault_id`.
 
 - Monochrome, minimal chrome.
 - One command field under the timeline. No chat transcript.
+- The mic is push-to-talk. `useDictation` records with `MediaRecorder`, then `POST /api/v1/dictation` sends the clip to local Parakeet on the MLX worker. Press again, trailing silence, or about 18s stops the take. Web Speech runs only if that request cannot reach Parakeet. `VoiceControl` is unchanged.
 - Media panel classified video / audio / image.
 - No demo copy and no track legends.
 - Status text is one short line under the field (`CommandBar`, `role="status"`). The line clears only when it is `Done`.
