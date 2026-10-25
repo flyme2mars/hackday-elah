@@ -2,6 +2,7 @@ import { importBlob, importFiles, importUrl, MEDIA_DRAG_MIME, mediaDragKindMime,
 import { droppedLibraryAsset, type PendingDrop, type TimelineClipRef } from './dropPlace.ts'
 import { createSharedGate } from './importGate.ts'
 import { getLibraryAsset, registerAssets, type LibraryAsset, type LibraryKind } from './library.ts'
+import { putUploadBlob } from './projectStorage.ts'
 
 const elahIds = new Map<string, string>()
 const loadedByVault = new Map<string, MediaAsset>()
@@ -69,15 +70,44 @@ export async function ensureImported(asset: LibraryAsset): Promise<string> {
   return imported.id
 }
 
+export function clearMediaCache(): void {
+  elahIds.clear()
+  loadedByVault.clear()
+}
+
+/** Re-import bytes saved for a browser upload and point the library at the new blob URL. */
+export async function restoreUploadBlob(
+  asset: Pick<LibraryAsset, 'vaultId' | 'name' | 'kind' | 'durationSec'>,
+  blob: Blob,
+): Promise<{ asset: LibraryAsset; mediaId: string }> {
+  const imported = await importBlob(blob, { name: asset.name, kind: asset.kind })
+  const stored: LibraryAsset = {
+    vaultId: asset.vaultId,
+    name: asset.name,
+    kind: asset.kind,
+    durationSec: imported.durationSec > 0 ? imported.durationSec : asset.durationSec,
+    src: imported.src,
+    thumb: null,
+  }
+  elahIds.set(asset.vaultId, imported.id)
+  loadedByVault.set(asset.vaultId, imported)
+  registerAssets([stored])
+  return { asset: stored, mediaId: imported.id }
+}
+
 /** Register local files into the library as `upload/<name>` and remember the elah asset id. */
 export async function importLocalFiles(files: readonly File[]): Promise<LibraryAsset[]> {
   if (files.length === 0) return []
   const result = await importFiles(files)
   const taken = new Set<string>()
   const assets: LibraryAsset[] = []
+  const pending = [...files]
   for (const imported of result.imported) {
+    const file = takeFile(pending, imported.name, imported.byteSize)
     const asset = rememberUpload(imported, taken)
-    if (asset) assets.push(asset)
+    if (!asset) continue
+    assets.push(asset)
+    if (file) await putUploadBlob(asset.vaultId, file)
   }
   for (const skipped of result.skipped) {
     if (skipped.reason !== 'unsupported') continue
@@ -85,10 +115,18 @@ export async function importLocalFiles(files: readonly File[]): Promise<LibraryA
     if (!kind) continue
     const imported = await importBlob(skipped.file, { name: skipped.file.name, kind })
     const asset = rememberUpload(imported, taken)
-    if (asset) assets.push(asset)
+    if (!asset) continue
+    assets.push(asset)
+    await putUploadBlob(asset.vaultId, skipped.file)
   }
   registerAssets(assets)
   return assets
+}
+
+function takeFile(pending: File[], name: string, size: number): File | undefined {
+  const index = pending.findIndex((file) => file.name === name && file.size === size)
+  if (index < 0) return undefined
+  return pending.splice(index, 1)[0]
 }
 
 function rememberUpload(imported: MediaAsset, taken: Set<string>): LibraryAsset | null {

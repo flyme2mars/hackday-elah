@@ -30,6 +30,11 @@ export function listLibraryAssets(): LibraryAsset[] {
   return [...assets.values()]
 }
 
+export function clearLibraryRegistry(): void {
+  assets.clear()
+  srcIndex.clear()
+}
+
 export function mergeLibraryAssets(
   current: readonly LibraryAsset[],
   incoming: readonly LibraryAsset[],

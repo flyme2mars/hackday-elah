@@ -152,11 +152,23 @@ try {
   assert.deepEqual((await snapshot()).stage, { width: 1600, height: 900 })
   await page.getByRole('button', { name: 'Redo', exact: true }).click()
   assert.deepEqual((await snapshot()).stage, { width: 1200, height: 800 })
+  await page.waitForFunction(() => {
+    const raw = localStorage.getItem('frameflow.project')
+    if (!raw) return false
+    const data = JSON.parse(raw)
+    return data.project?.stage?.width === 1200 && data.project?.stage?.height === 800
+  })
   await page.reload()
+  await page.locator('[data-project-ready="true"]').waitFor()
   assert.deepEqual(
     (await snapshot()).stage,
-    { width: 1080, height: 1920 },
-    'Reload retains the original demo default',
+    { width: 1200, height: 800 },
+    'Reload keeps the stage from the open project',
+  )
+  assert.equal(
+    (await snapshot()).tracks.find((track) => track.alias === 'T1').clips[0].id,
+    clipId,
+    'Reload keeps the title clip',
   )
   await page.setViewportSize({ width: 390, height: 844 })
   await control.waitFor({ state: 'visible' })

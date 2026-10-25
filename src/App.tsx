@@ -20,6 +20,7 @@ import {
   useSelectionStore,
   useTimelineEngine,
   useTracksStore,
+  useTransitionsStore,
   type InitialTrackConfig,
   type TimelineRef,
 } from '@elah/editor'
@@ -46,6 +47,8 @@ import CommandBar, { type VoiceControl } from './CommandBar.tsx'
 import { useDictation } from './host/useDictation.ts'
 import MediaPanel from './MediaPanel.tsx'
 import { ProjectAspectControl, ProjectFormatReadout } from './ProjectFormat.tsx'
+import { DEFAULT_STAGE, stageOf, type ProjectSnapshot } from './host/projectSnapshot.ts'
+import { readBootSnapshot, useProjectPersistence } from './host/useProjectPersistence.ts'
 import {
   applyOps,
   getTimeline,
@@ -95,31 +98,35 @@ const debug =
   new URLSearchParams(window.location.search).get('debug') === '1'
 
 export default function App() {
+  const [boot] = useState(() => readBootSnapshot())
+  const stage = stageOf(boot) ?? DEFAULT_STAGE
   return (
     <EditorProvider
       fps={FPS}
-      stage={{ width: 1080, height: 1920 }}
+      stage={stage}
       defaultTrackHeight={48}
       initialTracks={INITIAL_TRACKS}
     >
-      <EditorShell />
+      <EditorShell boot={boot} />
     </EditorProvider>
   )
 }
 
-function EditorShell() {
+function EditorShell({ boot }: { boot: ProjectSnapshot | null }) {
   const engine = useTimelineEngine()
   const timelineRef = useRef<TimelineRef>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   usePreviewOverlayBounds(previewRef)
   const clips = useTracksStore((state) => state.clips)
-  const [library, setLibrary] = useState<LibraryAsset[]>([])
   const [results, setResults] = useState<LibraryAsset[] | null>(null)
   const [readyIds, setReadyIds] = useState<Map<string, string>>(() => new Map())
   const readyRef = useRef<Map<string, string>>(new Map())
   const [command, setCommand] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
+  const project = useProjectPersistence(engine, boot, setStatus)
+  const library = project.library
+  const setLibrary = project.setLibrary
   const dictation = useDictation({ value: command, busy, onChange: setCommand })
   const voice: VoiceControl = dictation.unavailable
     ? { state: 'unavailable' }
@@ -196,18 +203,22 @@ function EditorShell() {
 
   const onUpload = useCallback(
     async (files: readonly File[]) => {
+      const generation = project.generation()
       closeMenu()
       setBusy(true)
       try {
         const added = await importLocalFiles(files)
+        if (project.generation() !== generation) return
         if (added.length === 0) {
           setStatus('Nothing new to add.')
           return
         }
         for (const asset of added) {
           const assetId = await ensureImported(asset)
+          if (project.generation() !== generation) return
           readyRef.current.set(asset.vaultId, assetId)
         }
+        if (project.generation() !== generation) return
         setReadyIds(new Map(readyRef.current))
         setLibrary((current) => {
           const ids = new Set(added.map((item) => item.vaultId))
@@ -215,12 +226,13 @@ function EditorShell() {
         })
         setStatus('Done')
       } catch (error) {
+        if (project.generation() !== generation) return
         setStatus(oneLine(error))
       } finally {
-        setBusy(false)
+        if (project.generation() === generation) setBusy(false)
       }
     },
-    [closeMenu],
+    [closeMenu, project],
   )
 
   const onDragAsset = useCallback(
@@ -241,23 +253,38 @@ function EditorShell() {
 
   const onPlace = useCallback(
     async (asset: LibraryAsset) => {
+      const generation = project.generation()
       closeMenu()
       setBusy(true)
       try {
         await placeAsset(engine, asset)
+        if (project.generation() !== generation) return
         setLibrary((current) => mergeLibraryAssets(current, [asset]))
         fitTimeline()
         setStatus('Done')
       } catch (error) {
+        if (project.generation() !== generation) return
         setStatus(oneLine(error))
       } finally {
-        setBusy(false)
+        if (project.generation() === generation) setBusy(false)
       }
     },
-    [closeMenu, engine, fitTimeline],
+    [closeMenu, engine, fitTimeline, project, setLibrary],
   )
 
+  function onNewProject() {
+    closeMenu()
+    setResults(null)
+    setCommand('')
+    setBusy(false)
+    readyRef.current = new Map()
+    setReadyIds(new Map())
+    setStatus('')
+    void project.reset()
+  }
+
   async function onSubmit() {
+    const generation = project.generation()
     const text = command.trim()
     if (!text || busy) return
     closeMenu()
@@ -275,6 +302,7 @@ function EditorShell() {
         listLibraryAssets(),
         selected,
       )
+      if (project.generation() !== generation) return
       if (result.ops.length > 0) {
         setStatus('Editing…')
         await applyOps(engine, result.ops, result.opsLabel)
@@ -317,14 +345,16 @@ function EditorShell() {
         }),
       )
     } catch (error) {
+      if (project.generation() !== generation) return
       setResults(null)
       setStatus(commandErrorLine(error))
     } finally {
-      setBusy(false)
+      if (project.generation() === generation) setBusy(false)
     }
   }
 
   async function onFindSimilar(clipId: string) {
+    const generation = project.generation()
     closeMenu()
     reconcileClipVaults(engine)
     const vaultId = vaultIdForClip(engine, clipId)
@@ -340,12 +370,14 @@ function EditorShell() {
         getTimeline(engine),
         listLibraryAssets(),
       )
+      if (project.generation() !== generation) return
       setResults(result.hits)
       setStatus(clipStatus(result.note) || 'Done')
     } catch (error) {
+      if (project.generation() !== generation) return
       setStatus(similarErrorLine(error))
     } finally {
-      setBusy(false)
+      if (project.generation() === generation) setBusy(false)
     }
   }
 
@@ -492,6 +524,7 @@ function EditorShell() {
   return (
     <div
       className="elah-root shell"
+      data-project-ready={project.ready ? 'true' : 'false'}
       onKeyDown={(event) => {
         // Preserve native control keys before Elah's global timeline listener.
         if (
@@ -513,10 +546,13 @@ function EditorShell() {
         </div>
         <div className="project-name">
           <span className="project-dot" />
-          Untitled
+          {project.name}
         </div>
         <div className="app-actions">
           <ProjectFormatReadout />
+          <button type="button" className="btn new-project-btn" onClick={onNewProject}>
+            New project
+          </button>
           <ExportButton onStatus={setStatus} />
         </div>
       </header>
@@ -1099,9 +1135,10 @@ function DebugSnapshot() {
   useTracksStore((state) => state.stage)
   useTracksStore((state) => state.clips)
   useTracksStore((state) => state.tracks)
+  const transitions = useTransitionsStore((state) => state.transitions)
   return (
     <pre className="debug-json">
-      {JSON.stringify(getTimeline(engine), null, 2)}
+      {JSON.stringify({ ...getTimeline(engine), transitions }, null, 2)}
     </pre>
   )
 }
