@@ -582,6 +582,23 @@ export function rememberClipVault(clipId: string, vaultId: string): void {
   vaultByClipId.set(clipId, vaultId)
 }
 
+export function clearClipBindings(): void {
+  aliases.clear()
+  vaultByClipId.clear()
+}
+
+export function collectClipVaults(engine: TimelineEngine): Record<string, string> {
+  reconcileClipVaults(engine)
+  const vaults: Record<string, string> = {}
+  for (const clips of Object.values(engine.getProject().clips)) {
+    for (const clip of clips) {
+      const vaultId = vaultIdForClip(engine, clip.id)
+      if (vaultId) vaults[clip.id] = vaultId
+    }
+  }
+  return vaults
+}
+
 export function vaultIdForClip(engine: TimelineEngine, clipId: string): string | null {
   const bound = vaultByClipId.get(clipId)
   if (bound) return bound
