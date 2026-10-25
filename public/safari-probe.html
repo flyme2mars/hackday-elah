@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Safari probe</title></head>
+<body style="font:14px monospace;background:#111;color:#eee;padding:16px;white-space:pre-wrap">
+<div id="out">probing…</div>
+<script type="module">
+const out = document.getElementById('out')
+const lines = []
+function log(s){ lines.push(s); out.textContent = lines.join('\n') }
+async function tryImport(label, url){
+  try {
+    await import(url)
+    log('OK  ' + label + '  ' + url)
+    return true
+  } catch (e) {
+    log('FAIL ' + label + '  ' + url)
+    log('  ' + (e && e.message ? e.message : e))
+    if (e && e.stack) log('  ' + String(e.stack).split('\n').slice(0,6).join('\n  '))
+    return false
+  }
+}
+const urls = [
+  ['react', '/node_modules/.vite/deps/react.js?v=dbaa405c'],
+  ['react-dom/client', '/node_modules/.vite/deps/react-dom_client.js?v=818aba2e'],
+  ['jsx-dev', '/node_modules/.vite/deps/react_jsx-dev-runtime.js?v=dbaa405c'],
+  ['timeline css', '/node_modules/@elah/timeline/dist/styles.css'],
+  ['editor css', '/node_modules/@elah/editor/dist/styles.css'],
+  ['tokens css', '/node_modules/@elah/editor/src/styles/tokens.css'],
+  ['index css', '/src/index.css'],
+  ['elah editor', '/node_modules/@elah/editor/dist/index.js?v=9f34fabe'],
+  ['App', '/src/App.tsx'],
+  ['main', '/src/main.tsx'],
+]
+for (const [label, url] of urls) {
+  await tryImport(label, url)
+}
+log('done')
+</script>
+</body></html>

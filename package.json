@@ -1,0 +1,30 @@
+{
+  "name": "hackday-elah",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Monochrome browser editor. A command field drives search and timeline ops on @elah/editor.",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 43123 --strictPort",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 43123 --strictPort",
+    "lint": "oxlint",
+    "sense": "python3 -m uvicorn sense.app:app --host 127.0.0.1 --port 8765"
+  },
+  "dependencies": {
+    "@elah/editor": "^0.6.0",
+    "lucide-react": "^0.511.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "oxlint": "^1.88.0",
+    "playwright": "^1.48.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.4"
+  }
+}

@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Safari probe2</title></head>
+<body style="font:13px monospace;background:#111;color:#eee;padding:16px;white-space:pre-wrap">
+<div id="out">probing…</div>
+<script type="module">
+const out = document.getElementById('out')
+const lines = []
+const log = (s) => { lines.push(s); out.textContent = lines.join('\n') }
+const seen = new Set()
+const importRe = /(?:import|export)\s+(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)/g
+
+function resolve(fromUrl, spec) {
+  if (spec.startsWith('.') || spec.startsWith('/')) {
+    return new URL(spec, fromUrl).href
+  }
+  // bare: try node_modules relative to editor package for @elah/*
+  if (spec.startsWith('@elah/')) {
+    const rest = spec.slice('@elah/'.length)
+    const [pkg, ...tail] = rest.split('/')
+    const base = `http://127.0.0.1:43123/node_modules/@elah/${pkg}/`
+    if (tail.length === 0) return base + 'dist/index.js'
+    return base + tail.join('/')
+  }
+  if (spec === 'react' || spec.startsWith('react/')) {
+    return 'http://127.0.0.1:43123/node_modules/.vite/deps/react.js?v=dbaa405c'
+  }
+  if (spec === 'react-dom' || spec.startsWith('react-dom/')) {
+    return 'http://127.0.0.1:43123/node_modules/.vite/deps/react-dom_client.js?v=818aba2e'
+  }
+  return null // skip other bare for now; Vite would rewrite
+}
+
+async function fetchText(url) {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error('HTTP ' + res.status)
+  return await res.text()
+}
+
+async function walk(url, depth=0) {
+  if (seen.has(url) || depth > 8) return
+  seen.add(url)
+  const label = url.replace('http://127.0.0.1:43123/','')
+  try {
+    await import(url)
+    log('OK   ' + label)
+  } catch (e) {
+    log('FAIL ' + label + ' :: ' + (e.message || e))
+    // still try to fetch and walk children to find leaf
+  }
+  let text
+  try { text = await fetchText(url) } catch (e) {
+    log('  fetchfail ' + (e.message||e)); return
+  }
+  const specs = []
+  let m
+  importRe.lastIndex = 0
+  while ((m = importRe.exec(text))) {
+    specs.push(m[1] || m[2])
+  }
+  for (const spec of [...new Set(specs)]) {
+    const next = resolve(url, spec)
+    if (!next) {
+      if (!spec.startsWith('react') && !spec.startsWith('@elah')) {
+        // ignore mediabunny etc for now but note
+        if (depth < 2) log('  skip bare ' + spec)
+      }
+      continue
+    }
+    // only walk same-origin js
+    if (!next.endsWith('.js') && !next.includes('.js?')) continue
+    await walk(next, depth+1)
+  }
+}
+
+const start = 'http://127.0.0.1:43123/node_modules/@elah/editor/dist/index.js?v=9f34fabe'
+await walk(start)
+log('seen=' + seen.size)
+log('done')
+</script>
+</body></html>

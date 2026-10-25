@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Safari leaf</title></head>
+<body style="font:13px monospace;background:#111;color:#eee;padding:16px;white-space:pre-wrap"><div id="out">…</div>
+<script type="module">
+const out = document.getElementById('out')
+const lines = []
+const log = (s) => { lines.push(s); out.textContent = lines.join('\n') }
+const seen = new Set()
+const importUrlRe = /from\s+"(\/[^"]+)"/g
+
+async function fetchText(url) {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + url)
+  return res.text()
+}
+
+async function tryImport(url) {
+  try { await import(url); return null }
+  catch (e) { return e && e.message ? e.message : String(e) }
+}
+
+async function findLeaf(url, depth=0) {
+  if (seen.has(url) || depth > 25) return
+  seen.add(url)
+  const err = await tryImport(url)
+  const short = url.replace('http://127.0.0.1:43123','')
+  if (!err) { log('OK   ' + short); return }
+  log('FAIL ' + short + ' :: ' + err)
+  let text
+  try { text = await fetchText(url) } catch (e) { log('  fetch: ' + e.message); return }
+  const deps = []
+  let m
+  while ((m = importUrlRe.exec(text))) deps.push(new URL(m[1], 'http://127.0.0.1:43123').href)
+  // also vite cjs style: import x from "/node_modules/..."
+  const fromRe = /from\s+"(\/node_modules\/[^"]+|\/src\/[^"]+|\/@[^"]+)"/g
+  while ((m = fromRe.exec(text))) deps.push(new URL(m[1], 'http://127.0.0.1:43123').href)
+  const uniq = [...new Set(deps)]
+  log('  deps=' + uniq.length)
+  const failedKids = []
+  for (const dep of uniq) {
+    const childErr = await tryImport(dep)
+    if (childErr) failedKids.push(dep)
+  }
+  if (failedKids.length === 0) {
+    log('  LEAF (all deps import OK; this module body fails) ' + short)
+    // show first 200 chars / look for syntax issues
+    log('  head: ' + text.slice(0, 180).replace(/\n/g,' '))
+    return
+  }
+  for (const dep of failedKids) await findLeaf(dep, depth+1)
+}
+
+await findLeaf('http://127.0.0.1:43123/node_modules/@elah/editor/dist/index.js?v=9f34fabe')
+log('done seen=' + seen.size)
+</script></body></html>
