@@ -13,6 +13,8 @@ import numpy as np
 from sense.catalog import Catalog, Item, Vectors
 from sense.planner import (
     INSTRUCTIONS,
+    Call,
+    OpError,
     VertexBusy,
     _choose_planner,
     _do_turn,
@@ -23,6 +25,7 @@ from sense.planner import (
     health,
     run_command,
     run_similar,
+    validate_ops,
 )
 
 UPLOAD_SIMILAR_NOTE = "Find similar works on vault clips. Browser uploads are not on disk for EmbeddingGemma yet."
@@ -53,6 +56,8 @@ class GuidanceTest(unittest.TestCase):
         self.assertIn('{"op":"trim","clip_id":"...","duration_s":2}', INSTRUCTIONS)
         self.assertIn("Omit start_s unless the user asked to move the left edge.", INSTRUCTIONS)
         self.assertNotIn('{"op":"trim","clip_id":"...","start_s":0,"duration_s":2}', INSTRUCTIONS)
+        self.assertIn("call apply_ops right away", INSTRUCTIONS)
+        self.assertIn("Do not call search_vault for those.", INSTRUCTIONS)
 
     def test_parse_tool_json_from_text(self) -> None:
         fenced = """Here you go
@@ -711,6 +716,104 @@ class DigitalOceanTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(via_e4b["planner"], "e4b")
         self.assertIn("DigitalOcean busy; using local E4B.", via_e4b["note"])
         self.assertEqual(via_e4b["ops"][0]["op"], "trim")
+
+
+def beach_catalog() -> Catalog:
+    root = Path("/tmp")
+    beach = Item("video/beach.mp4", "Beach", "video", None, 8.0, False)
+    return Catalog(root, root, [beach], None, None, False)
+
+
+def _no_calls(contents: list, messages: list) -> tuple:
+    return [], contents, messages
+
+
+def _fixed_planner(planner: object):
+    async def choose() -> object:
+        return planner
+
+    return choose
+
+
+class StringDurationAndSearchFallbackTest(unittest.IsolatedAsyncioTestCase):
+    def test_trim_accepts_numeric_string_duration(self) -> None:
+        ops = validate_ops([{"op": "trim", "clip_id": "c1", "duration_s": "2"}], set())
+        self.assertEqual(ops, [{"op": "trim", "clip_id": "c1", "duration_s": 2.0}])
+        self.assertIsInstance(ops[0]["duration_s"], float)
+        spaced = validate_ops([{"op": "trim", "clip_id": "c1", "duration_s": " 2 "}], set())
+        self.assertEqual(spaced[0]["duration_s"], 2.0)
+        with self.assertRaises(OpError):
+            validate_ops([{"op": "trim", "clip_id": "c1", "duration_s": ""}], set())
+        with self.assertRaises(OpError):
+            validate_ops([{"op": "trim", "clip_id": "c1", "duration_s": "two"}], set())
+
+    async def test_edit_with_empty_or_failed_ops_does_not_search(self) -> None:
+        async def empty_planner(contents: list, messages: list) -> tuple:
+            return _no_calls(contents, messages)
+
+        async def failed_trim(contents: list, messages: list) -> tuple:
+            call = Call(
+                "apply_ops",
+                {"label": "Trim", "ops": [{"op": "trim", "clip_id": "c1", "duration_s": "nope"}]},
+            )
+            return [call], contents, messages
+
+        async def forbid_search(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("edit commands must not fall through to vault search")
+
+        body = {"command": "trim the beach clip to 2 sec", "timeline": timeline(), "library": []}
+        with (
+            patch("sense.planner._choose_planner", _fixed_planner(empty_planner)),
+            patch("sense.planner._search", forbid_search),
+        ):
+            empty = await run_command(beach_catalog(), body)
+        self.assertEqual(empty["ops"], [])
+        self.assertEqual(empty["hits"], {"video": [], "audio": [], "image": []})
+
+        with (
+            patch("sense.planner._choose_planner", _fixed_planner(failed_trim)),
+            patch("sense.planner._search", forbid_search),
+        ):
+            failed = await run_command(beach_catalog(), body)
+        self.assertEqual(failed["ops"], [])
+        self.assertEqual(failed["hits"], {"video": [], "audio": [], "image": []})
+        self.assertIn("duration_s must be a number.", failed["note"])
+
+    async def test_string_duration_trim_applies_without_search(self) -> None:
+        async def string_trim(contents: list, messages: list) -> tuple:
+            call = Call(
+                "apply_ops",
+                {"label": "Trim to 2s", "ops": [{"op": "trim", "clip_id": "c1", "duration_s": "2"}]},
+            )
+            return [call], contents, messages
+
+        async def forbid_search(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("a successful trim must not search the vault")
+
+        with (
+            patch("sense.planner._choose_planner", _fixed_planner(string_trim)),
+            patch("sense.planner._search", forbid_search),
+        ):
+            result = await run_command(
+                beach_catalog(),
+                {"command": "trim the beach clip to 2 sec", "timeline": timeline(), "library": []},
+            )
+        self.assertEqual(result["ops"], [{"op": "trim", "clip_id": "c1", "duration_s": 2.0}])
+        self.assertEqual(result["hits"], {"video": [], "audio": [], "image": []})
+
+    async def test_find_command_still_fallback_searches(self) -> None:
+        async def empty_planner(contents: list, messages: list) -> tuple:
+            return _no_calls(contents, messages)
+
+        with patch("sense.planner._choose_planner", _fixed_planner(empty_planner)):
+            result = await run_command(
+                beach_catalog(),
+                {"command": "find beach footage", "timeline": timeline(), "library": []},
+            )
+        self.assertEqual(result["ops"], [])
+        self.assertEqual([hit["vault_id"] for hit in result["hits"]["video"]], ["video/beach.mp4"])
+        self.assertEqual(result["hits"]["audio"], [])
+        self.assertEqual(result["hits"]["image"], [])
 
 
 if __name__ == "__main__":
