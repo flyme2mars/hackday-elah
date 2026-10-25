@@ -77,6 +77,7 @@ When the vault folder is missing or empty, search can still return `public/sampl
 - `POST /v1/command` with `command`, `timeline`, and `library`
 - `POST /similar` with `vault_id`, `timeline`, and `library`
 - `POST /search` with `query` and `library`
+- `POST /v1/dictation` with the raw audio bytes (`audio/webm`, `audio/wav`, `audio/ogg`, or `audio/mp4`) and `Content-Type` set to that type. The response is `{"text":"..."}`. The worker writes a temp file, converts it to 16 kHz mono wav when ffmpeg is present, and posts `{"model":"parakeet","path":"..."}` to `SENSE_MLX_TRANSCRIBE_URL`. This is local Parakeet only. `503` means Parakeet is not loaded.
 - `GET /media?id=` and `GET /thumb?id=` for vault files only
 
 `apply_ops` is returned to the browser. This process has no TimelineEngine.

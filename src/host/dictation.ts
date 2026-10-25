@@ -4,6 +4,9 @@ export type DictationState =
   | { readonly phase: 'idle' }
   | { readonly phase: 'arming' }
   | { readonly phase: 'listening' }
+  | { readonly phase: 'finalizing' }
+  | { readonly phase: 'fallback' }
+  | { readonly phase: 'failed'; readonly message: string }
   | { readonly phase: 'denied'; readonly reason: 'blocked' | 'missing' }
   | { readonly phase: 'unsupported' }
 
@@ -13,6 +16,10 @@ export type DictationEvent =
   | { readonly type: 'started' }
   | { readonly type: 'ended' }
   | { readonly type: 'halt' }
+  | { readonly type: 'finalize' }
+  | { readonly type: 'accept' }
+  | { readonly type: 'fallback' }
+  | { readonly type: 'reject'; readonly message: string }
   | { readonly type: 'error'; readonly code: string }
 
 export type DictationMode = 'idle' | 'listening' | 'denied'
@@ -59,14 +66,43 @@ export function dictationReducer(state: DictationState, event: DictationEvent): 
       if (!event.supported && state.phase !== 'unsupported') return { phase: 'unsupported' }
       return state
     case 'arm':
-      if (state.phase === 'idle' || state.phase === 'denied') return { phase: 'arming' }
+      if (state.phase === 'idle' || state.phase === 'denied' || state.phase === 'failed') {
+        return { phase: 'arming' }
+      }
       return state
     case 'started':
       if (state.phase === 'arming') return { phase: 'listening' }
       return state
     case 'ended':
     case 'halt':
-      if (state.phase === 'arming' || state.phase === 'listening') return IDLE_DICTATION
+      if (
+        state.phase === 'arming' ||
+        state.phase === 'listening' ||
+        state.phase === 'finalizing' ||
+        state.phase === 'fallback' ||
+        state.phase === 'failed'
+      ) {
+        return IDLE_DICTATION
+      }
+      return state
+    case 'finalize':
+      if (state.phase === 'listening') return { phase: 'finalizing' }
+      return state
+    case 'accept':
+      if (state.phase === 'finalizing' || state.phase === 'fallback') return IDLE_DICTATION
+      return state
+    case 'fallback':
+      if (state.phase === 'finalizing') return { phase: 'fallback' }
+      return state
+    case 'reject':
+      if (
+        state.phase === 'arming' ||
+        state.phase === 'listening' ||
+        state.phase === 'finalizing' ||
+        state.phase === 'fallback'
+      ) {
+        return { phase: 'failed', message: event.message }
+      }
       return state
     case 'error':
       return reduceError(state, event.code)
@@ -87,7 +123,14 @@ function reduceError(state: DictationState, code: string): DictationState {
     case 'missing':
       return deny(state, 'missing')
     case 'ignore':
-      if (state.phase === 'arming' || state.phase === 'listening') return IDLE_DICTATION
+      if (
+        state.phase === 'arming' ||
+        state.phase === 'listening' ||
+        state.phase === 'finalizing' ||
+        state.phase === 'fallback'
+      ) {
+        return IDLE_DICTATION
+      }
       return state
     default: {
       const _exhaustive: never = fault
@@ -103,9 +146,12 @@ export function dictateIntent(state: DictationState): 'start' | 'stop' | 'none' 
       return 'none'
     case 'arming':
     case 'listening':
+    case 'finalizing':
+    case 'fallback':
       return 'stop'
     case 'idle':
     case 'denied':
+    case 'failed':
       return 'start'
     default: {
       const _exhaustive: never = state
@@ -118,11 +164,14 @@ export function dictationMode(state: DictationState): DictationMode {
   switch (state.phase) {
     case 'arming':
     case 'listening':
+    case 'finalizing':
+    case 'fallback':
       return 'listening'
     case 'denied':
     case 'unsupported':
       return 'denied'
     case 'idle':
+    case 'failed':
       return 'idle'
     default: {
       const _exhaustive: never = state
@@ -163,6 +212,12 @@ export function dictationNotice(state: DictationState): string | null {
       return 'Speech recognition is not available in this browser.'
     case 'denied':
       return deniedNotice(state.reason)
+    case 'finalizing':
+      return 'Transcribing…'
+    case 'fallback':
+      return 'Browser speech. Parakeet did not answer.'
+    case 'failed':
+      return state.message
     case 'idle':
     case 'arming':
     case 'listening':
@@ -182,8 +237,11 @@ export function dictationLabel(state: DictationState): string {
       return deniedLabel(state.reason)
     case 'arming':
     case 'listening':
+    case 'finalizing':
+    case 'fallback':
       return 'Stop dictation'
     case 'idle':
+    case 'failed':
       return 'Start dictation'
     default: {
       const _exhaustive: never = state

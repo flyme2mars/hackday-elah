@@ -23,10 +23,11 @@ type. The speech controller supplies one of these states:
 | `denied` | `onRetry` | Permission-denied icon, browser permission guidance |
 | `unavailable` | None | Disabled microphone |
 
-`EditorShell` currently passes `{ state: 'unavailable' }`. The remaining speech
-integration belongs at that `CommandBar` call site in `src/App.tsx`. The speech
-controller owns microphone permissions, recognition, and state changes. Its
-transcript updates the existing `command` state through `setCommand`.
+`EditorShell` maps `useDictation` onto `voice`. The controller records with
+`MediaRecorder` and sends one clip to local Parakeet (`POST /api/v1/dictation`).
+Browser speech is only a fallback when that request cannot reach Parakeet.
+The controller owns microphone permissions and state changes. Its transcript
+updates the existing `command` state through `setCommand`.
 
 The UI does not create a speech recognizer or claim to listen before the
 controller starts. Mic clicks preserve typed text and never submit the form.

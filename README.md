@@ -136,6 +136,8 @@ using local HTTP stand-ins. Run the launcher on the Mac to verify the real model
 
 The field sends the text, the current timeline, and the visible library to `POST /v1/command`. The worker may call `search_vault`, `similar`, `get_frame`, `transcribe`, `get_timeline`, and `apply_ops`.
 
+The mic records a short clip in the browser and sends it to `POST /v1/dictation`. Sense writes that audio and asks local Parakeet on the MLX worker for one transcript, then the text is appended to the command field. Press the mic again to finish, or it stops on silence or at about 18 seconds. If Parakeet cannot be reached, the same button can use browser speech for that take. Permission denied and a missing microphone still use the existing mic button states.
+
 Sense tools run in the worker. `apply_ops` comes back to the browser and is applied as one undo step. The media panel refills with classified hits. A status line reports search or edit, then clears when the line is "Done". Planner-offline, timeout, and export failures stay on that line.
 
 Right-click a clip and choose Find similar. Vault clips call `POST /similar`

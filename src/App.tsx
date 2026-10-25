@@ -124,7 +124,7 @@ function EditorShell() {
   const voice: VoiceControl = dictation.unavailable
     ? { state: 'unavailable' }
     : dictation.mode === 'listening'
-      ? { state: 'listening', onStop: dictation.halt }
+      ? { state: 'listening', onStop: dictation.finish }
       : dictation.mode === 'denied'
         ? { state: 'denied', onRetry: dictation.toggle }
         : { state: 'idle', onStart: dictation.toggle }
@@ -668,7 +668,7 @@ function EditorShell() {
       <CommandBar
         value={command}
         busy={busy}
-        status={status}
+        status={dictation.line(status)}
         onChange={setCommand}
         onSubmit={() => {
           dictation.halt()

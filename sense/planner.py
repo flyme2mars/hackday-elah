@@ -16,6 +16,7 @@ from urllib.parse import quote, urlparse
 import httpx
 
 from sense.catalog import LIBRARY_CAP, Catalog, Item
+from sense.dictation_upload import ParakeetUnavailable, parakeet_text
 from sense.retrieve import (
     CosineRank,
     cosine,
@@ -1174,21 +1175,13 @@ async def _transcribe(state: TurnState, vault_id: str, start_s: object, end_s: o
         return {"ok": False, "error": "No file for that id."}
     if not await _mlx_up():
         return {"ok": False, "error": "Parakeet is not loaded."}
-    url = os.environ.get("SENSE_MLX_TRANSCRIBE_URL", f"{mlx_origin()}/v1/audio/transcriptions")
-    payload: dict[str, Any] = {"path": str(item.path), "model": os.environ.get("SENSE_ASR_MODEL", "parakeet")}
-    if isinstance(start_s, (int, float)) and not isinstance(start_s, bool):
-        payload["start_s"] = float(start_s)
-    if isinstance(end_s, (int, float)) and not isinstance(end_s, bool):
-        payload["end_s"] = float(end_s)
-    async with httpx.AsyncClient(timeout=120) as client:
-        response = await client.post(url, json=payload)
-    if response.status_code >= 400:
+    start = float(start_s) if isinstance(start_s, (int, float)) and not isinstance(start_s, bool) else None
+    end = float(end_s) if isinstance(end_s, (int, float)) and not isinstance(end_s, bool) else None
+    try:
+        text = await parakeet_text(item.path, start_s=start, end_s=end)
+    except ParakeetUnavailable:
         return {"ok": False, "error": "Parakeet is not loaded."}
-    data = response.json()
-    text = data.get("text") or data.get("transcript") or ""
-    if not isinstance(text, str):
-        return {"ok": False, "error": "Parakeet returned no text."}
-    return {"ok": True, "text": text[:4000]}
+    return {"ok": True, "text": text}
 
 
 def _take_hits(state: TurnState, items: list[Item], mode: str) -> None:
