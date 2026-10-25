@@ -2,7 +2,17 @@
 import unittest
 from unittest.mock import patch
 
-from sense.planner import INSTRUCTIONS, TOOLS, Call, OpError, fan_selected_ops, run_command, steer_extend_animation, validate_ops
+from sense.planner import (
+    INSTRUCTIONS,
+    TOOLS,
+    Call,
+    OpError,
+    fan_selected_ops,
+    run_command,
+    steer_extend_animation,
+    stitch_created_aliases,
+    validate_ops,
+)
 from sense.test_local_plan import beach_catalog, catalog, timeline
 
 
@@ -398,6 +408,180 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([op["property"] for op in panned], ["x", "y"])
         self.assertEqual(panned[0]["keys"][1], {"t_s": 3.0, "value": 0.8})
         self.assertEqual(panned[1]["keys"][1], {"t_s": 3.0, "value": 0.6})
+
+    def test_prompt_shows_hello_world_rotation_on_one_clip_id(self):
+        self.assertIn(
+            '{"op":"add_text","clip_id":"text_hello_world","content":"Hello World","track":"T1","start_s":0,"duration_s":10}',
+            INSTRUCTIONS,
+        )
+        self.assertIn(
+            '{"op":"set_motion","clip_id":"text_hello_world","property":"rotation","from":0,"to":360,"duration_s":10}',
+            INSTRUCTIONS,
+        )
+        self.assertIn("duration_s at least N", INSTRUCTIONS)
+
+    def test_new_text_without_clip_id_takes_the_invented_motion_id(self):
+        ops = stitch_created_aliases([
+            {"op": "add_text", "content": "Hello World", "track": "T1", "start_s": 0, "duration_s": 2},
+            _rotation("text_hello_world"),
+        ], timeline())
+        self.assertEqual(len(ops), 2)
+        self.assertEqual(ops[0]["op"], "add_text")
+        self.assertEqual(ops[0]["clip_id"], "text_hello_world")
+        self.assertEqual(ops[0]["content"], "Hello World")
+        self.assertEqual(ops[0]["start_s"], 0)
+        self.assertEqual(ops[1]["clip_id"], "text_hello_world")
+        self.assertEqual(ops[1]["op"], "set_motion")
+
+    def test_text_create_with_the_same_clip_id_stays_unchanged(self):
+        ops = [
+            {"op": "add_text", "clip_id": "title1", "content": "Hello World", "start_s": 0, "duration_s": 10},
+            _rotation("title1"),
+        ]
+        self.assertEqual(stitch_created_aliases(ops, timeline()), ops)
+
+    def test_motion_before_the_text_create_runs_after_the_alias_is_stamped(self):
+        ops = stitch_created_aliases([
+            _rotation("text_hello_world"),
+            {"op": "add_text", "content": "Hello World", "start_s": 0, "duration_s": 10},
+        ], {"tracks": []})
+        self.assertEqual([op["op"] for op in ops], ["add_text", "set_motion"])
+        self.assertEqual(ops[0]["clip_id"], "text_hello_world")
+        self.assertEqual(ops[1]["clip_id"], "text_hello_world")
+
+    def test_invented_follow_up_uses_the_create_clip_id(self):
+        ops = stitch_created_aliases([
+            {"op": "add_text", "clip_id": "title1", "content": "Hello World", "start_s": 0, "duration_s": 10},
+            _rotation("text_hello_world"),
+        ], timeline())
+        self.assertEqual(ops[0]["clip_id"], "title1")
+        self.assertEqual(ops[1]["clip_id"], "title1")
+
+    def test_one_new_text_keeps_one_alias(self):
+        ops = stitch_created_aliases([
+            {"op": "add_text", "content": "Hello World", "start_s": 0, "duration_s": 10},
+            _rotation("text_hello_world"),
+            {"op": "set_motion", "clip_id": "text_hello_zoom", "property": "scale", "keys": [{"t_s": 0.0, "value": 1.0}, {"t_s": 10.0, "value": 2.0}]},
+        ], {"tracks": []})
+        self.assertEqual([op["op"] for op in ops], ["add_text", "set_motion", "set_motion"])
+        self.assertEqual([op["clip_id"] for op in ops], ["text_hello_world", "text_hello_world", "text_hello_world"])
+
+    def test_two_new_texts_keep_separate_aliases(self):
+        ops = stitch_created_aliases([
+            {"op": "add_text", "content": "Hello", "start_s": 0, "duration_s": 2},
+            {"op": "add_text", "content": "World", "start_s": 2, "duration_s": 2},
+            _rotation("text_hello"),
+            _rotation("text_world"),
+        ], {"tracks": []})
+        self.assertEqual([op.get("clip_id") for op in ops], ["text_hello", "text_world", "text_hello", "text_world"])
+
+    def test_timeline_clip_is_not_retargeted_onto_new_text(self):
+        ops = [
+            {"op": "add_text", "content": "Hello", "start_s": 0, "duration_s": 2},
+            _rotation("c1"),
+        ]
+        self.assertEqual(stitch_created_aliases(ops, timeline()), ops)
+
+    def test_split_alias_is_not_stolen_by_a_new_text(self):
+        ops = [
+            {"op": "split", "clip_id": "c1", "at_s": 1, "right_id": "right-half"},
+            {"op": "set_transform", "clip_id": "right-half", "rotation": 10},
+            {"op": "add_text", "content": "Hello", "start_s": 0, "duration_s": 2},
+        ]
+        self.assertEqual(stitch_created_aliases(ops, timeline()), ops)
+
+    def test_earlier_text_alias_is_not_copied_onto_a_second_text(self):
+        ops = [
+            {"op": "add_text", "clip_id": "title1", "content": "Hello", "start_s": 0, "duration_s": 2},
+            {"op": "add_text", "content": "World", "start_s": 2, "duration_s": 2},
+            _rotation("title1"),
+        ]
+        stitched = stitch_created_aliases(ops, timeline())
+        self.assertEqual(stitched[0]["clip_id"], "title1")
+        self.assertNotIn("clip_id", stitched[1])
+        self.assertEqual(stitched[2]["clip_id"], "title1")
+
+    def test_new_clip_without_clip_id_takes_the_invented_edit_id(self):
+        ops = stitch_created_aliases([
+            {"op": "add_clip", "vault_id": "video/flower.mp4", "track": "V1", "start_s": 0},
+            {"op": "set_transform", "clip_id": "flower", "rotation": 90},
+        ], {"tracks": []})
+        self.assertEqual(ops[0]["clip_id"], "flower")
+        self.assertEqual(ops[1]["clip_id"], "flower")
+
+    def test_text_and_clip_creates_keep_their_own_aliases(self):
+        ops = stitch_created_aliases([
+            {"op": "add_clip", "vault_id": "video/flower.mp4", "track": "V1", "start_s": 0},
+            {"op": "add_text", "content": "Hello World", "start_s": 0, "duration_s": 10},
+            _rotation("text_hello_world"),
+            {"op": "set_transform", "clip_id": "flower", "rotation": 90},
+        ], {"tracks": []})
+        by_op = {}
+        for op in ops:
+            by_op.setdefault(op["op"], []).append(op.get("clip_id"))
+        self.assertEqual(by_op["add_text"], ["text_hello_world"])
+        self.assertEqual(by_op["add_clip"], ["flower"])
+        self.assertEqual(by_op["set_motion"], ["text_hello_world"])
+        self.assertEqual(by_op["set_transform"], ["flower"])
+
+    async def test_hello_world_rotation_binds_before_the_host_sees_ops(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [
+                {"op": "add_text", "content": "Hello World", "track": "T1", "start_s": 0, "duration_s": 2},
+                {"op": "set_motion", "clip_id": "text_hello_world", "property": "rotation", "from": 0, "to": 360, "duration_s": 10},
+            ]})], contents, messages
+
+        body = {
+            "command": "Create a text called Hello World and put in the start and rotate it for ten seconds",
+            "timeline": timeline(),
+            "library": [],
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(catalog(), body)
+        self.assertEqual(result["ops"], [
+            {
+                "op": "add_text",
+                "content": "Hello World",
+                "start_s": 0.0,
+                "duration_s": 2.0,
+                "track": "T1",
+                "clip_id": "text_hello_world",
+            },
+            {
+                "op": "set_motion",
+                "clip_id": "text_hello_world",
+                "property": "rotation",
+                "keys": [{"t_s": 0.0, "value": 0.0}, {"t_s": 10.0, "value": 360.0}],
+            },
+        ])
+        self.assertEqual(result["hits"], {"video": [], "audio": [], "image": []})
+
+    async def test_selected_clip_is_not_stamped_onto_a_new_text(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [
+                {"op": "add_text", "content": "Hello", "start_s": 0, "duration_s": 2},
+                {"op": "set_motion", "clip_id": "text_hello_world", "property": "rotation", "from": 0, "to": 90, "duration_s": 1},
+            ]})], contents, messages
+
+        body = {
+            "command": "add a title and rotate the selection",
+            "timeline": timeline(),
+            "library": [],
+            "selected_clip_ids": ["c1"],
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(catalog(), body)
+        self.assertNotIn("clip_id", result["ops"][0])
+        self.assertEqual(result["ops"][1]["clip_id"], "c1")
+
+
+def _rotation(clip_id, seconds=10.0):
+    return {
+        "op": "set_motion",
+        "clip_id": clip_id,
+        "property": "rotation",
+        "keys": [{"t_s": 0.0, "value": 0.0}, {"t_s": float(seconds), "value": 360.0}],
+    }
 
 
     def test_invented_layout_names_become_set_transform(self):

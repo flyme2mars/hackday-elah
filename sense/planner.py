@@ -754,6 +754,7 @@ async def _execute(state: TurnState, call: Call) -> tuple[dict[str, Any], bytes 
                 state.selected_clip_ids,
             )
             ops = steer_extend_animation(state.command, state.timeline, ops, state.selected_clip_ids)
+            ops = stitch_created_aliases(ops, state.timeline)
             label = args.get("label")
             state.ops = ops
             state.label = label.strip()[:80] if isinstance(label, str) and label.strip() else "Edit"
@@ -2267,6 +2268,11 @@ def fan_selected_ops(ops: list[dict[str, Any]], selected: list[str]) -> list[dic
         seen.add(key)
         unique.append(op)
     return unique
+
+
+def stitch_created_aliases(ops: list[dict[str, Any]], timeline: dict[str, Any]) -> list[dict[str, Any]]:
+    """Bind a follow-up clip id that this batch invented onto the create that introduced it."""
+    return ops
 
 
 _EXTEND_ANIMATION_RE = re.compile(
