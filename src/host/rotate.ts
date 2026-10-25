@@ -120,21 +120,18 @@ function buildTransform(
   size: { width: number; height: number } | undefined,
 ): Transform {
   const stage = engine.getProject().stage
-  if (!placesClip(change) && size && (clip.type === 'video' || clip.type === 'image') && stage.width > 0 && stage.height > 0) {
+  const prev = clip.transform
+  const canRefit =
+    !placesClip(change) &&
+    size !== undefined &&
+    (clip.type === 'video' || clip.type === 'image') &&
+    stage.width > 0 &&
+    stage.height > 0
+  if (canRefit && size && (prev === undefined || poseIsFitted(prev, size, stage.width, stage.height))) {
     // Start from contain-fit, then shrink so the rotated box still sits inside the stage.
     // 180° keeps the upright scale. 90° would otherwise crop a portrait frame.
-    const fit = transformFromContainRect(size.width, size.height, stage.width, stage.height)
-    const fittedWidth = size.width * fit.scale
-    const fittedHeight = size.height * fit.scale
-    return {
-      x: fit.x,
-      y: fit.y,
-      scale: fit.scale * containScaleForRotation(fittedWidth, fittedHeight, rotation, stage.width, stage.height),
-      rotation,
-      anchor: { x: 0.5, y: 0.5 },
-    }
+    return containFit(size, rotation, stage.width, stage.height)
   }
-  const prev = clip.transform
   return {
     x: change.x ?? prev?.x ?? 0.5,
     y: change.y ?? prev?.y ?? 0.5,
@@ -142,6 +139,38 @@ function buildTransform(
     rotation,
     anchor: prev?.anchor ?? { x: 0.5, y: 0.5 },
   }
+}
+
+function containFit(
+  size: { width: number; height: number },
+  rotation: number,
+  stageWidth: number,
+  stageHeight: number,
+): Transform {
+  const fit = transformFromContainRect(size.width, size.height, stageWidth, stageHeight)
+  const fittedWidth = size.width * fit.scale
+  const fittedHeight = size.height * fit.scale
+  return {
+    x: fit.x,
+    y: fit.y,
+    scale: fit.scale * containScaleForRotation(fittedWidth, fittedHeight, rotation, stageWidth, stageHeight),
+    rotation,
+    anchor: { x: 0.5, y: 0.5 },
+  }
+}
+
+function poseIsFitted(
+  prev: Transform,
+  size: { width: number; height: number },
+  stageWidth: number,
+  stageHeight: number,
+): boolean {
+  const fit = containFit(size, prev.rotation, stageWidth, stageHeight)
+  return near(prev.x, fit.x) && near(prev.y, fit.y) && near(prev.scale, fit.scale)
+}
+
+function near(a: number, b: number): boolean {
+  return Math.abs(a - b) <= 5e-4
 }
 
 /** Scale factor that keeps a rotated width×height rectangle inside the stage. */
