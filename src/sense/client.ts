@@ -77,6 +77,9 @@ export async function findSimilar(
   timeline: TimelineSnapshot,
   library: readonly LibraryAsset[],
 ): Promise<{ note: string; hits: LibraryAsset[] }> {
+  if (vaultId.startsWith('upload/')) {
+    return { note: 'Similarity is unavailable for browser uploads: the MLX worker needs a file on disk. Use a vault clip.', hits: [] }
+  }
   const response = await fetch('/api/similar', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -188,6 +191,7 @@ export function resolveMediaSrc(src: string): string {
 
 const TRACKS = new Set(['V1', 'V2', 'A1', 'T1'])
 const OP_NAMES = new Set([
+  'crossfade',
   'set_stage',
   'add_clip',
   'add_text',
@@ -216,6 +220,13 @@ function coerceOp(raw: unknown, index: number): Op {
     throw new Error(`Op ${index} has an unknown type.`)
   }
   switch (name) {
+    case 'crossfade':
+      return {
+        op: 'crossfade',
+        from_clip_id: requiredString(row, 'from_clip_id'),
+        to_clip_id: requiredString(row, 'to_clip_id'),
+        duration_s: optionalNumber(row.duration_s),
+      }
     case 'set_stage':
       return { op: 'set_stage', width: requiredNumber(row, 'width'), height: requiredNumber(row, 'height') }
     case 'add_clip':
@@ -281,10 +292,14 @@ function coerceOp(raw: unknown, index: number): Op {
         op: 'update_text',
         clip_id: requiredString(row, 'clip_id'),
         content: optionalString(row.content),
+        start_s: optionalNumber(row.start_s),
+        duration_s: optionalNumber(row.duration_s),
         font_size: optionalNumber(row.font_size),
         color: optionalString(row.color),
         x: optionalNumber(row.x),
         y: optionalNumber(row.y),
+        background: optionalString(row.background),
+        background_opacity: optionalNumber(row.background_opacity),
       }
     default:
       throw new Error(`Op ${index} has an unknown type.`)

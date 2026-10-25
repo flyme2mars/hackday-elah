@@ -8,6 +8,7 @@ export type TrackAlias = (typeof TRACK_ALIASES)[number]
  * before it calls TimelineEngine. `clip_id` is a host alias, not an engine id.
  */
 export type Op =
+  | { op: 'crossfade'; from_clip_id: string; to_clip_id: string; duration_s?: number }
   | { op: 'set_stage'; width: number; height: number }
   | {
       op: 'add_clip'
@@ -60,10 +61,14 @@ export type Op =
       op: 'update_text'
       clip_id: string
       content?: string
+      start_s?: number
+      duration_s?: number
       font_size?: number
       color?: string
       x?: number
       y?: number
+      background?: string
+      background_opacity?: number
     }
 
 export interface TimelineClipSnapshot {
