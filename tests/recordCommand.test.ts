@@ -41,6 +41,17 @@ test('leading silence stops a take that never heard speech', () => {
   )
 })
 
+test('hold-to-talk ignores silence and still stops at the cap', () => {
+  assert.equal(
+    recordingStop({ elapsedMs: 5_000, silentMs: 5_000, heardSpeech: true }, false),
+    null,
+  )
+  assert.equal(
+    recordingStop({ elapsedMs: DICTATION_MAX_MS, silentMs: 0, heardSpeech: false }, false),
+    'max',
+  )
+})
+
 test('the duration cap stops a long take', () => {
   assert.equal(
     recordingStop({ elapsedMs: DICTATION_MAX_MS, silentMs: 0, heardSpeech: true }),

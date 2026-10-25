@@ -30,12 +30,16 @@ export function mediaRecorderAvailable(): boolean {
  * Stop a take on trailing silence after speech, on leading silence, or at the cap.
  * `silentMs` is time since the last loud frame. It equals elapsed time until speech starts.
  */
-export function recordingStop(sample: {
-  readonly elapsedMs: number
-  readonly silentMs: number
-  readonly heardSpeech: boolean
-}): 'silence' | 'max' | null {
+export function recordingStop(
+  sample: {
+    readonly elapsedMs: number
+    readonly silentMs: number
+    readonly heardSpeech: boolean
+  },
+  silence = true,
+): 'silence' | 'max' | null {
   if (sample.elapsedMs >= DICTATION_MAX_MS) return 'max'
+  if (!silence) return null
   if (sample.heardSpeech && sample.silentMs >= DICTATION_TRAILING_SILENCE_MS) return 'silence'
   if (!sample.heardSpeech && sample.silentMs >= DICTATION_LEADING_SILENCE_MS) return 'silence'
   return null

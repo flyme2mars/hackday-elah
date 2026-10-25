@@ -2,17 +2,20 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   IDLE_DICTATION,
-  chunksFromResultList,
   composeDictation,
   dictateIntent,
   dictationLabel,
   dictationMode,
   dictationNotice,
   dictationReducer,
+  holdAction,
+  parakeetFailureMessage,
   shownCommandStatus,
+  type DictationChord,
   type DictationEvent,
   type DictationState,
 } from '../src/host/dictation.ts'
+import { DictationRequestError } from '../src/sense/client.ts'
 
 function run(events: readonly DictationEvent[], start: DictationState = IDLE_DICTATION): DictationState {
   let state = start
@@ -86,16 +89,10 @@ test('shownCommandStatus prefers busy, then a notice, then listening', () => {
   assert.equal(shownCommandStatus('', null, false, false), 'Ready')
 })
 
-test('composeDictation replaces an interim when a later list is final', () => {
+test('composeDictation replaces an interim when a later chunk is final', () => {
   const base = 'cut the'
-  const interim = chunksFromResultList([
-    { isFinal: false, length: 1, 0: { transcript: 'flow' } },
-  ])
-  const finalList = chunksFromResultList([
-    { isFinal: true, length: 1, 0: { transcript: 'flower' } },
-  ])
-  assert.equal(composeDictation(base, interim), 'cut the flow')
-  assert.equal(composeDictation(base, finalList), 'cut the flower')
+  assert.equal(composeDictation(base, [{ text: 'flow', final: false }]), 'cut the flow')
+  assert.equal(composeDictation(base, [{ text: 'flower', final: true }]), 'cut the flower')
 })
 
 test('composeDictation keeps a trailing space on the base', () => {
@@ -126,16 +123,6 @@ test('a later interim replaces the earlier interim', () => {
   )
 })
 
-test('chunksFromResultList drops empty transcripts', () => {
-  const chunks = chunksFromResultList([
-    { isFinal: false, length: 1, 0: { transcript: '   ' } },
-    { isFinal: true, length: 1, 0: { transcript: '' } },
-    { isFinal: true, length: 0 },
-    { isFinal: true, length: 1, 0: { transcript: ' flower ' } },
-  ])
-  assert.deepEqual(chunks, [{ text: 'flower', final: true }])
-})
-
 test('dictationMode reports arming as listening', () => {
   assert.equal(dictationMode(IDLE_DICTATION), 'idle')
   assert.equal(dictationMode({ phase: 'arming' }), 'listening')
@@ -144,7 +131,7 @@ test('dictationMode reports arming as listening', () => {
   assert.equal(dictationMode({ phase: 'unsupported' }), 'denied')
 })
 
-test('finalize then accept returns to idle, and a miss can fall back', () => {
+test('finalize then accept returns to idle, and a Parakeet miss stays failed', () => {
   const listening = run([{ type: 'arm' }, { type: 'started' }])
   const finalizing = dictationReducer(listening, { type: 'finalize' })
   assert.deepEqual(finalizing, { phase: 'finalizing' })
@@ -152,11 +139,9 @@ test('finalize then accept returns to idle, and a miss can fall back', () => {
   assert.equal(dictationNotice(finalizing), 'Transcribing…')
   assert.equal(dictateIntent(finalizing), 'stop')
   assert.deepEqual(dictationReducer(finalizing, { type: 'accept' }), { phase: 'idle' })
-  const fallback = dictationReducer(finalizing, { type: 'fallback' })
-  assert.equal(dictationNotice(fallback), 'Browser speech. Parakeet did not answer.')
-  assert.equal(dictationMode(fallback), 'listening')
   const failed = dictationReducer(finalizing, { type: 'reject', message: 'Parakeet is not loaded.' })
   assert.deepEqual(failed, { phase: 'failed', message: 'Parakeet is not loaded.' })
+  assert.equal(dictationNotice(failed), 'Parakeet is not loaded.')
   assert.equal(dictationMode(failed), 'idle')
   assert.equal(dictateIntent(failed), 'start')
   assert.deepEqual(dictationReducer(failed, { type: 'arm' }), { phase: 'arming' })
@@ -169,7 +154,7 @@ test('dictationNotice and dictationLabel use the mic copy', () => {
   assert.equal(dictationNotice({ phase: 'listening' }), null)
   assert.equal(
     dictationNotice({ phase: 'unsupported' }),
-    'Speech recognition is not available in this browser.',
+    'Microphone recording is not available in this browser.',
   )
   assert.equal(
     dictationNotice({ phase: 'denied', reason: 'blocked' }),
@@ -179,7 +164,62 @@ test('dictationNotice and dictationLabel use the mic copy', () => {
   assert.equal(dictationLabel(IDLE_DICTATION), 'Start dictation')
   assert.equal(dictationLabel({ phase: 'arming' }), 'Stop dictation')
   assert.equal(dictationLabel({ phase: 'listening' }), 'Stop dictation')
-  assert.equal(dictationLabel({ phase: 'unsupported' }), 'Speech recognition unavailable')
+  assert.equal(dictationLabel({ phase: 'unsupported' }), 'Microphone unavailable')
   assert.equal(dictationLabel({ phase: 'denied', reason: 'blocked' }), 'Microphone denied')
   assert.equal(dictationLabel({ phase: 'denied', reason: 'missing' }), 'No microphone')
+})
+
+function chord(patch: Partial<DictationChord>): DictationChord {
+  return {
+    type: 'down',
+    code: 'AltLeft',
+    key: 'Alt',
+    repeat: false,
+    ctrl: false,
+    meta: false,
+    shift: false,
+    composing: false,
+    focus: 'shell',
+    ...patch,
+  }
+}
+
+test('Option down starts a hold and Option up sends it', () => {
+  assert.equal(holdAction(chord({}), 'idle', false, null).type, 'start')
+  assert.equal(holdAction(chord({ code: 'AltRight' }), 'denied', false, null).type, 'start')
+  assert.equal(holdAction(chord({ type: 'up', code: 'AltLeft' }), 'listening', false, 'AltLeft').type, 'send')
+  assert.equal(holdAction(chord({ type: 'up', code: 'AltLeft' }), 'arming', false, 'AltLeft').type, 'send')
+})
+
+test('Option hold ignores repeat, other text fields, busy, and an in-flight take', () => {
+  assert.equal(holdAction(chord({ repeat: true }), 'idle', false, null).type, 'ignore')
+  assert.equal(holdAction(chord({ focus: 'field' }), 'idle', false, null).type, 'ignore')
+  assert.equal(holdAction(chord({ focus: 'command' }), 'idle', false, null).type, 'start')
+  assert.equal(holdAction(chord({}), 'idle', true, null).type, 'ignore')
+  assert.equal(holdAction(chord({}), 'finalizing', false, null).type, 'ignore')
+  assert.equal(holdAction(chord({}), 'listening', false, null).type, 'ignore')
+  assert.equal(holdAction(chord({ shift: true }), 'idle', false, null).type, 'ignore')
+})
+
+test('Escape cancels a take and another key yields the hold without preventing the character', () => {
+  const escape = holdAction(chord({ code: 'Escape', key: 'Escape' }), 'listening', false, 'AltLeft')
+  assert.deepEqual(escape, { type: 'cancel', prevent: true })
+  assert.deepEqual(
+    holdAction(chord({ code: 'Escape', key: 'Escape' }), 'finalizing', false, null),
+    { type: 'cancel', prevent: true },
+  )
+  assert.equal(holdAction(chord({ code: 'Escape', key: 'Escape' }), 'idle', false, null).type, 'ignore')
+  const letter = holdAction(chord({ code: 'KeyA', key: 'a', focus: 'command' }), 'listening', false, 'AltLeft')
+  assert.deepEqual(letter, { type: 'cancel', prevent: false })
+})
+
+test('a Parakeet 503 or timeout names Parakeet and does not describe browser speech', () => {
+  const down = new DictationRequestError('Parakeet is not loaded.', false)
+  assert.equal(parakeetFailureMessage(down), 'Parakeet is not loaded.')
+  const timeout = new Error('timed out')
+  timeout.name = 'TimeoutError'
+  assert.equal(parakeetFailureMessage(timeout), 'Parakeet is not loaded.')
+  const rejected = new DictationRequestError('Expected an audio recording.', true)
+  assert.equal(parakeetFailureMessage(rejected), 'Expected an audio recording.')
+  assert.equal(parakeetFailureMessage(down).includes('Browser'), false)
 })

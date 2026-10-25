@@ -5,7 +5,6 @@ export type DictationState =
   | { readonly phase: 'arming' }
   | { readonly phase: 'listening' }
   | { readonly phase: 'finalizing' }
-  | { readonly phase: 'fallback' }
   | { readonly phase: 'failed'; readonly message: string }
   | { readonly phase: 'denied'; readonly reason: 'blocked' | 'missing' }
   | { readonly phase: 'unsupported' }
@@ -18,7 +17,6 @@ export type DictationEvent =
   | { readonly type: 'halt' }
   | { readonly type: 'finalize' }
   | { readonly type: 'accept' }
-  | { readonly type: 'fallback' }
   | { readonly type: 'reject'; readonly message: string }
   | { readonly type: 'error'; readonly code: string }
 
@@ -28,18 +26,6 @@ export type DictationChunk = {
   readonly text: string
   readonly final: boolean
 }
-
-export type ResultAlternativeLike = {
-  readonly transcript?: string
-}
-
-export type ResultLike = {
-  readonly isFinal: boolean
-  readonly length: number
-  readonly 0?: ResultAlternativeLike
-}
-
-export type ResultListLike = ArrayLike<ResultLike>
 
 type DictationFault =
   | { readonly kind: 'denied' }
@@ -79,7 +65,6 @@ export function dictationReducer(state: DictationState, event: DictationEvent): 
         state.phase === 'arming' ||
         state.phase === 'listening' ||
         state.phase === 'finalizing' ||
-        state.phase === 'fallback' ||
         state.phase === 'failed'
       ) {
         return IDLE_DICTATION
@@ -89,17 +74,13 @@ export function dictationReducer(state: DictationState, event: DictationEvent): 
       if (state.phase === 'listening') return { phase: 'finalizing' }
       return state
     case 'accept':
-      if (state.phase === 'finalizing' || state.phase === 'fallback') return IDLE_DICTATION
-      return state
-    case 'fallback':
-      if (state.phase === 'finalizing') return { phase: 'fallback' }
+      if (state.phase === 'finalizing') return IDLE_DICTATION
       return state
     case 'reject':
       if (
         state.phase === 'arming' ||
         state.phase === 'listening' ||
-        state.phase === 'finalizing' ||
-        state.phase === 'fallback'
+        state.phase === 'finalizing'
       ) {
         return { phase: 'failed', message: event.message }
       }
@@ -123,12 +104,7 @@ function reduceError(state: DictationState, code: string): DictationState {
     case 'missing':
       return deny(state, 'missing')
     case 'ignore':
-      if (
-        state.phase === 'arming' ||
-        state.phase === 'listening' ||
-        state.phase === 'finalizing' ||
-        state.phase === 'fallback'
-      ) {
+      if (state.phase === 'arming' || state.phase === 'listening' || state.phase === 'finalizing') {
         return IDLE_DICTATION
       }
       return state
@@ -147,7 +123,6 @@ export function dictateIntent(state: DictationState): 'start' | 'stop' | 'none' 
     case 'arming':
     case 'listening':
     case 'finalizing':
-    case 'fallback':
       return 'stop'
     case 'idle':
     case 'denied':
@@ -165,7 +140,6 @@ export function dictationMode(state: DictationState): DictationMode {
     case 'arming':
     case 'listening':
     case 'finalizing':
-    case 'fallback':
       return 'listening'
     case 'denied':
     case 'unsupported':
@@ -209,13 +183,11 @@ function deniedLabel(reason: DenyReason): string {
 export function dictationNotice(state: DictationState): string | null {
   switch (state.phase) {
     case 'unsupported':
-      return 'Speech recognition is not available in this browser.'
+      return 'Microphone recording is not available in this browser.'
     case 'denied':
       return deniedNotice(state.reason)
     case 'finalizing':
       return 'Transcribing…'
-    case 'fallback':
-      return 'Browser speech. Parakeet did not answer.'
     case 'failed':
       return state.message
     case 'idle':
@@ -232,13 +204,12 @@ export function dictationNotice(state: DictationState): string | null {
 export function dictationLabel(state: DictationState): string {
   switch (state.phase) {
     case 'unsupported':
-      return 'Speech recognition unavailable'
+      return 'Microphone unavailable'
     case 'denied':
       return deniedLabel(state.reason)
     case 'arming':
     case 'listening':
     case 'finalizing':
-    case 'fallback':
       return 'Stop dictation'
     case 'idle':
     case 'failed':
@@ -260,20 +231,6 @@ export function shownCommandStatus(
   if (notice !== null) return notice
   if (listening) return 'Listening\u2026'
   return appStatus || 'Ready'
-}
-
-export function chunksFromResultList(list: ResultListLike): readonly DictationChunk[] {
-  const chunks: DictationChunk[] = []
-  for (let index = 0; index < list.length; index += 1) {
-    const result = list[index]
-    if (!result || result.length < 1) continue
-    const transcript = result[0]?.transcript
-    if (typeof transcript !== 'string') continue
-    const text = transcript.trim()
-    if (!text) continue
-    chunks.push({ text, final: result.isFinal === true })
-  }
-  return chunks
 }
 
 function spokenText(chunks: readonly DictationChunk[]): string {
@@ -298,4 +255,77 @@ export function composeDictation(base: string, chunks: readonly DictationChunk[]
   if (!spoken) return base
   if (base.length === 0 || /\s$/.test(base)) return `${base}${spoken}`
   return `${base} ${spoken}`
+}
+
+export type DictationFocus = 'command' | 'field' | 'shell'
+
+export type DictationChord = {
+  readonly type: 'down' | 'up'
+  readonly code: string
+  readonly key: string
+  readonly repeat: boolean
+  readonly ctrl: boolean
+  readonly meta: boolean
+  readonly shift: boolean
+  readonly composing: boolean
+  readonly focus: DictationFocus
+}
+
+export type HoldAction =
+  | { readonly type: 'ignore' }
+  | { readonly type: 'start' }
+  | { readonly type: 'send' }
+  | { readonly type: 'cancel'; readonly prevent: boolean }
+  | { readonly type: 'drop' }
+
+const ACTIVE = new Set<DictationState['phase']>(['arming', 'listening', 'finalizing'])
+
+function isAlt(chord: DictationChord): boolean {
+  return chord.code === 'AltLeft' || chord.code === 'AltRight' || (chord.key === 'Alt' && chord.code === '')
+}
+
+function altIdentity(chord: DictationChord): string {
+  return chord.code || 'Alt'
+}
+
+export function holdAction(
+  chord: DictationChord,
+  phase: DictationState['phase'],
+  busy: boolean,
+  holding: string | null,
+): HoldAction {
+  if (chord.composing) return { type: 'ignore' }
+  if (chord.type === 'down' && chord.key === 'Escape' && !chord.repeat) {
+    if (phase === 'arming' || phase === 'listening' || phase === 'finalizing') {
+      return { type: 'cancel', prevent: true }
+    }
+    return { type: 'ignore' }
+  }
+  if (chord.type === 'down' && isAlt(chord)) {
+    if (chord.repeat || holding !== null) return { type: 'ignore' }
+    if (chord.ctrl || chord.meta || chord.shift) return { type: 'ignore' }
+    if (chord.focus === 'field') return { type: 'ignore' }
+    if (busy || phase === 'unsupported' || ACTIVE.has(phase)) return { type: 'ignore' }
+    return { type: 'start' }
+  }
+  if (chord.type === 'up' && isAlt(chord)) {
+    if (holding === null || holding !== altIdentity(chord)) return { type: 'ignore' }
+    if (phase === 'arming' || phase === 'listening') return { type: 'send' }
+    return { type: 'drop' }
+  }
+  if (chord.type === 'down' && holding !== null && !isAlt(chord)) {
+    if (phase === 'arming' || phase === 'listening') return { type: 'cancel', prevent: false }
+  }
+  return { type: 'ignore' }
+}
+
+export function parakeetFailureMessage(error: unknown): string {
+  if (error instanceof Error && error.name === 'DictationRequestError') {
+    const message = error.message.trim()
+    return (message || 'Parakeet is not loaded.').slice(0, 180)
+  }
+  if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+    return 'Parakeet is not loaded.'
+  }
+  return 'Parakeet returned no text.'
 }

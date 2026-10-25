@@ -25,9 +25,14 @@ type. The speech controller supplies one of these states:
 
 `EditorShell` maps `useDictation` onto `voice`. The controller records with
 `MediaRecorder` and sends one clip to local Parakeet (`POST /api/v1/dictation`).
-Browser speech is only a fallback when that request cannot reach Parakeet.
-The controller owns microphone permissions and state changes. Its transcript
-updates the existing `command` state through `setCommand`.
+The command mic does not call the browser speech recognizer. Click the mic
+button to start, and click again to send that clip. Hold Option (`AltLeft` or
+`AltRight`) and release to send. Escape aborts either take, including an
+in-flight Parakeet request, and does not send. Option is ignored while another
+text field is focused. In the command field, Option plus another key types the
+character and cancels the take. Click mode still stops on silence. Hold mode
+stops on keyup. The controller owns microphone permissions and state changes.
+Its transcript updates the existing `command` state through `setCommand`.
 
 The UI does not create a speech recognizer or claim to listen before the
 controller starts. Mic clicks preserve typed text and never submit the form.

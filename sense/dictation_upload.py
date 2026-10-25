@@ -35,7 +35,7 @@ _DEFAULT_MAX_BYTES = 8_000_000
 
 
 class ParakeetUnavailable(Exception):
-    """Local MLX Parakeet did not answer. Callers may fall back."""
+    pass
 
 
 class DictationRejected(Exception):
@@ -121,7 +121,37 @@ async def parakeet_text(
     text = data.get("text") or data.get("transcript") or ""
     if not isinstance(text, str):
         raise ParakeetUnavailable
-    return text[:4000]
+    return spoken_text(text)[:4000]
+
+
+def spoken_text(raw: str) -> str:
+    """Return a transcript. An MLX ``AlignedResult`` repr is not command text."""
+    body = raw.lstrip()
+    if not body.startswith("AlignedResult("):
+        return raw
+    parsed = _aligned_field(body)
+    return parsed
+
+
+def _aligned_field(raw: str) -> str:
+    for quote in ("'", '"'):
+        marker = f"text={quote}"
+        start = raw.find(marker)
+        if start < 0:
+            continue
+        index = start + len(marker)
+        chars: list[str] = []
+        while index < len(raw):
+            char = raw[index]
+            if char == "\\" and index + 1 < len(raw):
+                chars.append(raw[index + 1])
+                index += 2
+                continue
+            if char == quote:
+                return "".join(chars).strip()
+            chars.append(char)
+            index += 1
+    return ""
 
 
 async def transcribe_upload(data: bytes, content_type: str) -> str:
