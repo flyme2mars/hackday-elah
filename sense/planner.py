@@ -18,7 +18,7 @@ import httpx
 from sense.catalog import Catalog, Item
 from sense.retrieve import cosine, lexical
 
-INSTRUCTIONS = """You edit a timeline by calling tools. Search the library before you place media. Prefer vault_id values from search_vault or similar. You may also use a vault_id the user typed if it is in the library. Do not invent ids.
+INSTRUCTIONS = """You edit a timeline by calling tools. For trim, move, remove, rotate, volume, text, or other edits on clips already on the timeline, call apply_ops right away. Do not call search_vault for those. Search the library only when the user asks to find footage or before you place new media that is not already on the timeline. Prefer vault_id values from search_vault or similar. You may also use a vault_id the user typed if it is in the library. Do not invent ids.
 
 V1 and V2 take video. A1 takes audio. T1 takes text through add_text. Track names are the strings V1, V2, A1, T1. Never use numbers for tracks.
 
@@ -261,7 +261,7 @@ async def run_command(catalog: Catalog, body: dict[str, Any]) -> dict[str, Any]:
                 })
     except Exception as error:
         state.notes.append(_short(error))
-    if not state.hits and not state.ops:
+    if not state.hits and not state.ops and _wants_search_fallback(command):
         found, mode = await _search(state, command, None, 8)
         _take_hits(state, found, mode)
     note = " ".join(dict.fromkeys(state.notes)).strip()
@@ -682,8 +682,10 @@ async def _execute(state: TurnState, call: Call) -> tuple[dict[str, Any], bytes 
             return {"ok": True, "op_count": len(ops), "label": state.label}, None
         return {"error": f"Unknown tool {name}."}, None
     except OpError as error:
+        state.notes.append(str(error))
         return {"error": str(error)}, None
     except Exception as error:
+        state.notes.append(_short(error))
         return {"error": _short(error)}, None
 
 
@@ -984,6 +986,20 @@ def _copy_optional(raw: dict[str, Any], op: dict[str, Any], numbers: tuple[str, 
             op[key] = _req_str(raw, key)
 
 
+
+def _wants_search_fallback(command: str) -> bool:
+    """Only auto-search when the user asked to find footage, not after a failed edit."""
+    text = command.lower()
+    edit_words = (
+        "trim", "cut", "split", "move", "remove", "delete", "rotate", "volume",
+        "mute", "text", "title", "export", "fade", "crossfade", "speed", "zoom",
+    )
+    if any(word in text for word in edit_words):
+        return False
+    find_words = ("find", "search", "look for", "show me", "footage", "clip of", "video of")
+    return any(word in text for word in find_words)
+
+
 def _req_str(raw: dict[str, Any], key: str) -> str:
     value = raw.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -995,7 +1011,17 @@ def _req_str(raw: dict[str, Any], key: str) -> str:
 
 def _req_num(raw: dict[str, Any], key: str) -> float:
     value = raw.get(key)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool):
+        raise OpError(f"{key} must be a number.")
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            raise OpError(f"{key} must be a number.")
+        try:
+            value = float(value)
+        except ValueError as error:
+            raise OpError(f"{key} must be a number.") from error
+    if not isinstance(value, (int, float)):
         raise OpError(f"{key} must be a number.")
     number = float(value)
     if number != number or number in (float("inf"), float("-inf")):
