@@ -159,6 +159,35 @@ class DictationUploadTest(unittest.TestCase):
         self.assertTrue(str(sent["json"]["path"]).endswith(".wav"))
         self.assertEqual(sent["bytes"], b"RIFFwav")
 
+    def test_aligned_result_repr_uses_the_text_field(self) -> None:
+        raw = "AlignedResult(text='trim the flower', words=[])"
+        capture = _Capture(200, {"text": raw})
+        with (
+            patch("sense.dictation_upload.shutil.which", return_value=None),
+            patch("sense.dictation_upload.httpx.AsyncClient", lambda *args, **kwargs: capture),
+        ):
+            response = self.client.post(
+                "/v1/dictation",
+                content=b"RIFF",
+                headers={"content-type": "audio/wav"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"text": "trim the flower"})
+
+    def test_aligned_result_without_text_is_empty(self) -> None:
+        capture = _Capture(200, {"text": "AlignedResult(words=[])"})
+        with (
+            patch("sense.dictation_upload.shutil.which", return_value=None),
+            patch("sense.dictation_upload.httpx.AsyncClient", lambda *args, **kwargs: capture),
+        ):
+            response = self.client.post(
+                "/v1/dictation",
+                content=b"RIFF",
+                headers={"content-type": "audio/wav"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"text": ""})
+
     def test_oversize_recording_is_rejected(self) -> None:
         with patch.dict(os.environ, {"SENSE_DICTATION_MAX_BYTES": "4"}):
             response = self.client.post(

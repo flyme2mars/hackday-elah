@@ -42,7 +42,7 @@ export default function CommandBar({
     : denied
       ? 'Microphone access is blocked. Allow it in your browser settings, then retry.'
       : voice.state === 'unavailable'
-        ? 'Speech recognition is not available in this browser.'
+        ? 'Microphone recording is not available in this browser.'
         : ''
 
   function onVoice() {
@@ -132,7 +132,7 @@ export default function CommandBar({
           {busy ? status || 'Ready' : voiceStatus || status || 'Ready'}
         </p>
         <span className="command-hint">
-          Enter to apply <span>·</span> Shift + Enter for a new line
+          Enter to apply <span>·</span> Shift + Enter for a new line <span>·</span> Hold Option to talk
         </span>
       </div>
     </form>
