@@ -1,4 +1,10 @@
-import { ArrowUp, Command, Loader2 } from 'lucide-react'
+import { ArrowUp, Command, Loader2, Mic, MicOff, Square } from 'lucide-react'
+
+export type VoiceControl =
+  | { state: 'unavailable' }
+  | { state: 'idle'; onStart: () => void }
+  | { state: 'listening'; onStop: () => void }
+  | { state: 'denied'; onRetry: () => void }
 
 interface CommandBarProps {
   value: string
@@ -6,6 +12,7 @@ interface CommandBarProps {
   status: string
   onChange: (value: string) => void
   onSubmit: () => void
+  voice: VoiceControl
 }
 
 export default function CommandBar({
@@ -14,7 +21,43 @@ export default function CommandBar({
   status,
   onChange,
   onSubmit,
+  voice,
 }: CommandBarProps) {
+  const listening = voice.state === 'listening'
+  const denied = voice.state === 'denied'
+  const voiceLabel = listening
+    ? 'Stop listening'
+    : denied
+      ? 'Microphone access denied. Retry voice input'
+      : voice.state === 'unavailable'
+        ? 'Voice input unavailable'
+        : 'Start voice input'
+  const voiceStatus = listening
+    ? 'Listening… Speak your command.'
+    : denied
+      ? 'Microphone access is blocked. Allow it in your browser settings, then retry.'
+      : ''
+
+  function onVoice() {
+    switch (voice.state) {
+      case 'idle':
+        voice.onStart()
+        return
+      case 'listening':
+        voice.onStop()
+        return
+      case 'denied':
+        voice.onRetry()
+        return
+      case 'unavailable':
+        return
+      default: {
+        const exhaustive: never = voice
+        return exhaustive
+      }
+    }
+  }
+
   return (
     <form
       className="command"
@@ -48,6 +91,27 @@ export default function CommandBar({
           }}
         />
         <button
+          type="button"
+          className="mic-button"
+          data-state={voice.state}
+          aria-label={voiceLabel}
+          title={voiceLabel}
+          aria-pressed={listening}
+          disabled={voice.state === 'unavailable' || (busy && !listening)}
+          onClick={onVoice}
+        >
+          {listening ? (
+            <Square size={12} fill="currentColor" />
+          ) : denied ? (
+            <MicOff size={16} />
+          ) : (
+            <Mic size={16} />
+          )}
+          {listening && (
+            <span className="mic-listening-dot" aria-hidden="true" />
+          )}
+        </button>
+        <button
           type="submit"
           className="btn btn-primary"
           disabled={busy || value.trim() === ''}
@@ -58,7 +122,7 @@ export default function CommandBar({
       </div>
       <div className="command-footer">
         <p className="status" role="status">
-          {status || 'Ready'}
+          {voiceStatus || status || 'Ready'}
         </p>
         <span className="command-hint">
           Enter to apply <span>·</span> Shift + Enter for a new line

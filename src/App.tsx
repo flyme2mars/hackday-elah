@@ -14,6 +14,7 @@ import {
   framesToTimecode,
   playbackStore,
   selectionStore,
+  splitClipAtPlayhead,
   usePlaybackStore,
   useSelectionStore,
   useTimelineEngine,
@@ -38,7 +39,7 @@ import {
 } from 'lucide-react'
 import FloatingPanel, { type PanelAnchor } from './FloatingPanel.tsx'
 import TransitionPanel from './TransitionPanel.tsx'
-import { getSelectedClipIds } from './host/selection.ts'
+import { getSelectedClipIds, selectSplitResults } from './host/selection.ts'
 import { usePreviewOverlayBounds } from './host/usePreviewOverlayBounds.ts'
 import CommandBar from './CommandBar.tsx'
 import MediaPanel from './MediaPanel.tsx'
@@ -129,6 +130,7 @@ function EditorShell() {
   const totalFrames = useTracksStore((state) => state.totalFrames)
   const selectedIds = getSelectedClipIds(engine)
   const selectedCount = selectedIds.length
+  useEffect(() => selectSplitResults(engine), [engine])
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => timelineShortcut(engine, event)
     window.addEventListener('keydown', onKey, true)
@@ -212,8 +214,16 @@ function EditorShell() {
     setStatus('Searching…')
     try {
       const before = getTimeline(engine)
-      const selected = selectedPlannerClipIds(before, getSelectedClipIds(engine))
-      const result = await runCommand(text, before, listLibraryAssets(), selected)
+      const selected = selectedPlannerClipIds(
+        before,
+        getSelectedClipIds(engine),
+      )
+      const result = await runCommand(
+        text,
+        before,
+        listLibraryAssets(),
+        selected,
+      )
       if (result.ops.length > 0) {
         setStatus('Editing…')
         await applyOps(engine, result.ops, result.opsLabel)
@@ -296,6 +306,23 @@ function EditorShell() {
     commitClipRotation(engine)
     setMenu(null)
     setTransitionMenu(null)
+  }
+
+  function onSplitClip(clipId: string) {
+    const previousSelection = getSelectedClipIds(engine)
+    selectionStore.getState().selectClip(clipId)
+    const result = splitClipAtPlayhead(engine)
+    if (!result.ok) {
+      selectionStore.getState().selectClips(previousSelection)
+      setStatus(
+        result.reason === 'cannot-split-while-playing'
+          ? 'Pause playback before splitting a clip.'
+          : 'Move the playhead inside an unlocked clip to split it.',
+      )
+      return
+    }
+    closeMenu()
+    setStatus('Clip split.')
   }
 
   function onPreviewRotation(clipId: string, degrees: number) {
@@ -577,6 +604,7 @@ function EditorShell() {
             scale={engine.findClip(menu.clipId)?.clip.transform?.scale ?? 1}
             onClose={closeMenu}
             onFind={() => void onFindSimilar(menu.clipId)}
+            onSplit={() => onSplitClip(menu.clipId)}
             onPreview={(degrees) => onPreviewRotation(menu.clipId, degrees)}
             onPreviewScale={(scale) => onPreviewScale(menu.clipId, scale)}
             onCommit={() => commitClipRotation(engine)}
@@ -600,6 +628,7 @@ function EditorShell() {
         status={status}
         onChange={setCommand}
         onSubmit={() => void onSubmit()}
+        voice={{ state: 'unavailable' }}
       />
       {debug && <DebugSnapshot />}
     </div>
@@ -712,6 +741,7 @@ function ClipMenu({
   scale,
   onClose,
   onFind,
+  onSplit,
   onPreview,
   onPreviewScale,
   onCommit,
@@ -723,6 +753,7 @@ function ClipMenu({
   scale: number
   onClose: () => void
   onFind: () => void
+  onSplit: () => void
   onPreview: (degrees: number) => void
   onPreviewScale: (scale: number) => void
   onCommit: () => void
@@ -855,7 +886,12 @@ function ClipMenu({
               const value = event.target.value
               setScaleText(value)
               const parsed = Number(value)
-              if (value.trim() === '' || !Number.isFinite(parsed) || parsed <= 0) return
+              if (
+                value.trim() === '' ||
+                !Number.isFinite(parsed) ||
+                parsed <= 0
+              )
+                return
               onPreviewScale(parsed)
             }}
             onBlur={() => settleScale()}
@@ -875,7 +911,9 @@ function ClipMenu({
             secondsLabel="Rotation seconds"
             actionLabel="Set rotation motion"
             initial={degrees}
-            onApply={(from, to, seconds) => onSetMotion('rotation', from, to, seconds)}
+            onApply={(from, to, seconds) =>
+              onSetMotion('rotation', from, to, seconds)
+            }
           />
           <MotionSpan
             label="Scale"
@@ -884,10 +922,15 @@ function ClipMenu({
             secondsLabel="Scale seconds"
             actionLabel="Set scale motion"
             initial={scale}
-            onApply={(from, to, seconds) => onSetMotion('scale', from, to, seconds)}
+            onApply={(from, to, seconds) =>
+              onSetMotion('scale', from, to, seconds)
+            }
           />
         </div>
       </div>
+      <button type="button" className="panel-action" onClick={onSplit}>
+        <Scissors size={14} /> Split at playhead
+      </button>
       <button
         type="button"
         className="panel-action find-similar"
@@ -924,7 +967,12 @@ function MotionSpan({
     const fromValue = Number(from)
     const toValue = Number(to)
     const duration = Number(seconds)
-    if (!Number.isFinite(fromValue) || !Number.isFinite(toValue) || !(duration > 0)) return
+    if (
+      !Number.isFinite(fromValue) ||
+      !Number.isFinite(toValue) ||
+      !(duration > 0)
+    )
+      return
     onApply(fromValue, toValue, duration)
   }
 
