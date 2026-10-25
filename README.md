@@ -92,6 +92,22 @@ stops the processes it started. Missing dependencies, occupied ports and startup
 timeouts fail explicitly; logs go into a temporary directory printed at startup.
 `DEMO_START_TIMEOUT` sets the per-service timeout in seconds (default 120).
 
+## Project aspect ratio
+
+Use the **Project aspect ratio** selector beside Preview's **Fit** label to
+choose 9:16, 16:9, 1:1, or 4:5. The project dimensions in the top bar, Preview,
+command context and export follow the live Elah stage. Undo and redo include
+format changes. Agent `set_stage` changes appear in the same control, including
+sizes outside the presets. Reload resets the project to 1080 × 1920.
+
+Export keeps the selected ratio with a 720-pixel short edge: 720 × 1280 for
+9:16, 1280 × 720 for 16:9, 720 × 720 for 1:1, and 720 × 900 for 4:5.
+
+With Vite running, `CHROME_PATH=/path/to/chrome node tests/aspect-ratios.mjs`
+checks the stage, Preview geometry, real exported MP4 dimensions, agent sizes,
+undo, redo and mobile layout. Omit `CHROME_PATH` when Playwright Chromium is
+installed.
+
 ## Titles, transitions and keys
 
 Use commands such as `add title Hello at the start for 2 seconds`,
