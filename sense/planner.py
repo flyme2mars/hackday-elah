@@ -70,6 +70,7 @@ Removing the original clip_id after a split deletes both halves. "keep the right
 When trimming to a new length, send duration_s only. Omit start_s unless the user asked to move the left edge.
 
 Titles and captions are text overlays on T1, not library media. Add them directly with add_text; no search is needed. For "add title Hello at the start for 2 seconds", use {"op":"add_text","clip_id":"title1","content":"Hello","track":"T1","start_s":0,"duration_s":2}.
+To create text and rotate, zoom, or move it for N seconds, send one apply_ops call. add_text includes a clip_id. Use start_s 0 when the text goes at the start, and duration_s at least N. set_motion uses that same clip_id. For "Create a text called Hello World and put in the start and rotate it for ten seconds", use {"op":"add_text","clip_id":"text_hello_world","content":"Hello World","track":"T1","start_s":0,"duration_s":10} then {"op":"set_motion","clip_id":"text_hello_world","property":"rotation","from":0,"to":360,"duration_s":10}.
 To change an existing title, use its id from the timeline with update_text. Supported fields are content, start_s, duration_s, font_size, color, x, y, background, background_opacity. Omit fields that should stay unchanged. Remove a title with remove and its clip_id. Do not create a replacement when asked to edit an existing title.
 Text start_s must be non-negative and duration_s positive. x and y are normalized stage coordinates from 0 to 1; defaults are x=0.5, y=0.18. font_size is positive pixels. background_opacity ranges from 0 to 1. Use readable monochrome text by default.
 
@@ -2270,9 +2271,143 @@ def fan_selected_ops(ops: list[dict[str, Any]], selected: list[str]) -> list[dic
     return unique
 
 
+_CREATE_OPS = frozenset({"add_text", "add_clip"})
+_TEXT_ALIAS_RE = re.compile(r"^(?:text|title|caption|subtitle)(?:$|[_-]|\d)", re.IGNORECASE)
+
+
 def stitch_created_aliases(ops: list[dict[str, Any]], timeline: dict[str, Any]) -> list[dict[str, Any]]:
-    """Bind a follow-up clip id that this batch invented onto the create that introduced it."""
-    return ops
+    """Give a create the clip id a later edit invented for it.
+
+    add_text and add_clip may omit clip_id. The follow-up then names an id
+    like text_hello_world that is not on the timeline, and the host rejects
+    the batch. Stamp that id on the create. When the create already named a
+    clip_id, point the extra ids at that one so one new text keeps one alias.
+    Move the create ahead of an edit that names its alias.
+    """
+    known = _timeline_clip_ids(timeline) | _batch_aliases(ops)
+    invented = _invented_clip_ids(ops, known)
+    staged = _bind_invented_ids(ops, invented) if invented else ops
+    return _move_creates_before_aliases(staged)
+
+
+def _timeline_clip_ids(timeline: dict[str, Any]) -> set[str]:
+    found: set[str] = set()
+    source = timeline if isinstance(timeline, dict) else {}
+    for clip in _iter_timeline_clips(source):
+        for key in ("id", "alias"):
+            value = clip.get(key)
+            if isinstance(value, str) and value:
+                found.add(value)
+    return found
+
+
+def _batch_aliases(ops: list[dict[str, Any]]) -> set[str]:
+    found: set[str] = set()
+    for op in ops:
+        name = op.get("op")
+        if name in _CREATE_OPS:
+            alias = _op_alias(op)
+            if alias:
+                found.add(alias)
+        elif name == "split":
+            for key in ("left_id", "right_id"):
+                value = op.get(key)
+                if isinstance(value, str) and value:
+                    found.add(value)
+    return found
+
+
+def _invented_clip_ids(ops: list[dict[str, Any]], known: set[str]) -> list[str]:
+    found: list[str] = []
+    seen: set[str] = set()
+    for op in ops:
+        if op.get("op") in _CREATE_OPS:
+            continue
+        clip_id = op.get("clip_id")
+        if not isinstance(clip_id, str) or not clip_id or clip_id in known or clip_id in seen:
+            continue
+        seen.add(clip_id)
+        found.append(clip_id)
+    return found
+
+
+def _bind_invented_ids(ops: list[dict[str, Any]], invented: list[str]) -> list[dict[str, Any]]:
+    bound = [dict(op) for op in ops]
+    open_text = [index for index, op in enumerate(bound) if op.get("op") == "add_text" and _op_alias(op) is None]
+    open_clip = [index for index, op in enumerate(bound) if op.get("op") == "add_clip" and _op_alias(op) is None]
+    text_ids = [clip_id for clip_id in invented if _TEXT_ALIAS_RE.match(clip_id)]
+    other_ids = [clip_id for clip_id in invented if clip_id not in text_ids]
+    text_left = _stamp_aliases(bound, open_text, text_ids)
+    other_left = _stamp_aliases(bound, open_clip, other_ids)
+    if text_left and not any(op.get("op") == "add_text" for op in bound):
+        text_left = _stamp_aliases(bound, open_clip, text_left)
+    if other_left and not any(op.get("op") == "add_clip" for op in bound):
+        other_left = _stamp_aliases(bound, open_text, other_left)
+    for clip_id in text_left:
+        _rewrite_invented_id(bound, clip_id, "add_text")
+    for clip_id in other_left:
+        _rewrite_invented_id(bound, clip_id, "add_clip")
+    return bound
+
+
+def _stamp_aliases(ops: list[dict[str, Any]], indexes: list[int], clip_ids: list[str]) -> list[str]:
+    free = [index for index in indexes if _op_alias(ops[index]) is None]
+    for index, clip_id in zip(free, clip_ids, strict=False):
+        ops[index] = {**ops[index], "clip_id": clip_id}
+    return clip_ids[len(free):]
+
+
+def _rewrite_invented_id(ops: list[dict[str, Any]], invented: str, kind: str) -> None:
+    owners = [index for index, op in enumerate(ops) if op.get("op") == kind and _op_alias(op)]
+    if not owners:
+        owners = [index for index, op in enumerate(ops) if op.get("op") in _CREATE_OPS and _op_alias(op)]
+    if not owners:
+        return
+    ref = next(
+        (index for index, op in enumerate(ops) if op.get("op") not in _CREATE_OPS and op.get("clip_id") == invented),
+        None,
+    )
+    preceding = [index for index in owners if ref is None or index < ref]
+    canonical = _op_alias(ops[preceding[-1] if preceding else owners[0]])
+    if not canonical or canonical == invented:
+        return
+    for index, op in enumerate(ops):
+        if op.get("op") in _CREATE_OPS or op.get("clip_id") != invented:
+            continue
+        ops[index] = {**op, "clip_id": canonical}
+
+
+def _move_creates_before_aliases(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    moved = list(ops)
+    for _ in range(len(moved)):
+        owners: dict[str, int] = {}
+        for index, op in enumerate(moved):
+            if op.get("op") not in _CREATE_OPS:
+                continue
+            alias = _op_alias(op)
+            if alias:
+                owners[alias] = index
+        shift: tuple[int, int] | None = None
+        for index, op in enumerate(moved):
+            if op.get("op") in _CREATE_OPS:
+                continue
+            clip_id = op.get("clip_id")
+            owner = owners.get(clip_id) if isinstance(clip_id, str) else None
+            if owner is not None and owner > index:
+                shift = (owner, index)
+                break
+        if shift is None:
+            return ops if moved == ops else moved
+        owner, index = shift
+        moved.insert(index, moved.pop(owner))
+    return moved
+
+
+def _op_alias(op: dict[str, Any]) -> str | None:
+    clip_id = op.get("clip_id")
+    if isinstance(clip_id, str) and clip_id:
+        return clip_id
+    return None
 
 
 _EXTEND_ANIMATION_RE = re.compile(
