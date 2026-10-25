@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import patch
 
-from sense.planner import INSTRUCTIONS, TOOLS, Call, OpError, run_command, steer_extend_animation, validate_ops
+from sense.planner import INSTRUCTIONS, TOOLS, Call, OpError, fan_selected_ops, run_command, steer_extend_animation, validate_ops
 from sense.test_local_plan import beach_catalog, catalog, timeline
 
 
@@ -79,6 +79,10 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         turned = validate_ops([{"op": "set_transform", "clip_id": "c1", "rotation": "180"}], set())
         self.assertEqual(turned, [{"op": "set_transform", "clip_id": "c1", "rotation": 180.0}])
         self.assertIn("scale replaces the clip scale", INSTRUCTIONS)
+        self.assertIn("make it larger and put it in the center", INSTRUCTIONS)
+        self.assertIn('{"op":"split","clip_id":"...","at_s":1.5,"right_id":"right-half"}', INSTRUCTIONS)
+        self.assertIn('{"op":"remove","clip_id":"right-half"}', INSTRUCTIONS)
+        self.assertIn("deletes both halves", INSTRUCTIONS)
         scaled = validate_ops([{"op": "set_transform", "clip_id": "c1", "scale": "2"}], set())
         self.assertEqual(scaled, [{"op": "set_transform", "clip_id": "c1", "scale": 2.0}])
         placed = validate_ops([{"op": "set_transform", "clip_id": "c1", "x": 0.2, "y": "0.8", "scale": 1.5}], set())
@@ -112,6 +116,10 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
             "pan left while zooming",
             "fade opacity from 1 to 0",
             "extend the rotation to 8 seconds",
+            "make it larger and put it in the center",
+            "put it top-left",
+            "move it left a bit",
+            "split the video here and delete the right part",
         )
 
         async def search_only(contents, messages):
@@ -392,6 +400,167 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(panned[1]["keys"][1], {"t_s": 3.0, "value": 0.6})
 
 
+    def test_invented_layout_names_become_set_transform(self):
+        timeline = _clip_timeline(scale=2, x=0.4, y=0.7)
+        larger = validate_ops([{"op": "scale", "clip_id": "c1", "scale": "larger"}], set(), timeline)
+        self.assertEqual(larger[0]["op"], "set_transform")
+        self.assertAlmostEqual(larger[0]["scale"], 3.0)
+        zoom_in = validate_ops([{"op": "zoom_in", "clip_id": "c1"}], set(), timeline)
+        self.assertAlmostEqual(zoom_in[0]["scale"], 3.0)
+        zoom_out = validate_ops([{"op": "zoom_out", "clip_id": "c1"}], set(), timeline)
+        self.assertAlmostEqual(zoom_out[0]["scale"], 2 / 1.5)
+        center = validate_ops([{"op": "center", "clip_id": "c1"}], set(), timeline)
+        self.assertEqual(center, [{"op": "set_transform", "clip_id": "c1", "x": 0.5, "y": 0.5}])
+        corner = validate_ops([{"op": "position", "clip_id": "c1", "position": "top-left"}], set(), timeline)
+        self.assertEqual(corner[0]["x"], 0.0)
+        self.assertEqual(corner[0]["y"], 0.0)
+        turned = validate_ops([{"op": "rotate", "clip_id": "c1", "degrees": 90}], set(), timeline)
+        self.assertEqual(turned, [{"op": "set_transform", "clip_id": "c1", "rotation": 90.0}])
+        flipped = validate_ops([{"op": "flip", "clip_id": "c1"}], set(), timeline)
+        self.assertEqual(flipped[0]["rotation"], 180.0)
+        nudged = validate_ops([{"op": "nudge", "clip_id": "c1", "direction": "left"}], set(), timeline)
+        self.assertAlmostEqual(nudged[0]["x"], 0.3)
+        raised = validate_ops([{"op": "nudge", "clip_id": "c1", "direction": "up"}], set(), timeline)
+        self.assertAlmostEqual(raised[0]["y"], 0.6)
+        shrunk = validate_ops([{"op": "resize", "clip_id": "c1", "scale": "smaller"}], set(), timeline)
+        self.assertAlmostEqual(shrunk[0]["scale"], 2 / 1.5)
+        parked = validate_ops(
+            [{"op": "set_transform", "clip_id": "c1", "scale": 1}],
+            set(),
+            timeline,
+            "put it top-left",
+        )
+        self.assertEqual(parked[0]["x"], 0.0)
+        self.assertEqual(parked[0]["y"], 0.0)
+        moved = validate_ops([{"op": "move_to", "clip_id": "c1", "x": 0.2, "y": 0.3}], set(), timeline)
+        self.assertEqual(moved, [{"op": "set_transform", "clip_id": "c1", "x": 0.2, "y": 0.3}])
+        zoomed = validate_ops([{"op": "set_transform", "clip_id": "c1", "zoom": 4}], set(), timeline)
+        self.assertEqual(zoomed, [{"op": "set_transform", "clip_id": "c1", "scale": 4.0}])
+        motion = validate_ops(
+            [{"op": "zoom", "clip_id": "c1", "from": 1, "to": 2, "duration_s": 3}],
+            set(),
+            timeline,
+        )
+        self.assertEqual(motion[0]["op"], "set_motion")
+        self.assertEqual(motion[0]["property"], "scale")
+        filled = validate_ops(
+            [{"op": "set_transform", "clip_id": "c1", "scale": 2}],
+            set(),
+            _clip_timeline(scale=1),
+            "make it larger and put it in the center",
+        )
+        self.assertEqual(filled, [{"op": "set_transform", "clip_id": "c1", "scale": 2.0, "x": 0.5, "y": 0.5}])
+        with self.assertRaises(OpError) as caught:
+            validate_ops([{"op": "frobnicate", "clip_id": "c1"}], set(), timeline)
+        self.assertEqual(str(caught.exception), "Unknown op.")
+
+    async def test_larger_and_center_uses_selected_clip_scale(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [
+                {"op": "scale", "clip_id": "other", "scale": "larger"},
+                {"op": "center", "clip_id": "other"},
+            ]})], contents, messages
+
+        body = {
+            "command": "make it larger and put it in the center",
+            "timeline": _clip_timeline(scale=1.25, x=0.2, y=0.8),
+            "library": [],
+            "selected_clip_ids": ["c1"],
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(beach_catalog(), body)
+        transforms = [op for op in result["ops"] if op["op"] == "set_transform"]
+        self.assertTrue(transforms)
+        self.assertTrue(all(op["clip_id"] == "c1" for op in transforms))
+        self.assertGreater(max(op.get("scale", 0) for op in transforms), 1.25)
+        self.assertTrue(any(op.get("x") == 0.5 and op.get("y") == 0.5 for op in transforms))
+        self.assertNotIn("Unknown op", result["note"])
+        self.assertEqual(result["hits"]["video"], [])
+
+    async def test_split_here_also_removes_the_right_half(self):
+        phrases = (
+            ("split the video here and delete the right part", 3.0),
+            ("cut here and delete the right", 3.0),
+            ("split and keep the left", 2.0),
+            ("remove everything after the cut", 2.0),
+        )
+
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [{"op": "split", "clip_id": "other", "at_s": 2}]})], contents, messages
+
+        for command, at_s in phrases:
+            with self.subTest(command=command):
+                body = {
+                    "command": command,
+                    "timeline": timeline(),
+                    "library": [],
+                    "selected_clip_ids": ["c1"],
+                    "playhead_s": 3,
+                }
+                with patch("sense.planner._choose_planner", _planner(planner)):
+                    result = await run_command(beach_catalog(), body)
+                _assert_right_cut(self, result, at_s)
+                self.assertNotIn("Unknown op", result["note"])
+
+    async def test_remove_after_split_targets_the_right_alias_not_the_parent(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [
+                {"op": "split", "clip_id": "other", "at_s": 2},
+                {"op": "remove", "clip_id": "other"},
+            ]})], contents, messages
+
+        body = {
+            "command": "split the video here and delete the right part",
+            "timeline": timeline(),
+            "library": [],
+            "selected_clip_ids": ["c1"],
+            "playhead_s": 3,
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(catalog(), body)
+        _assert_right_cut(self, result, 3.0)
+        self.assertFalse(any(op.get("clip_id") == "c1" and op["op"] == "remove" for op in result["ops"]))
+
+    def test_selected_fanout_keeps_the_right_half_remove(self):
+        ops = fan_selected_ops(
+            [
+                {"op": "split", "clip_id": "c1", "at_s": 3, "right_id": "right-half"},
+                {"op": "remove", "clip_id": "right-half"},
+            ],
+            ["c1"],
+        )
+        self.assertEqual(ops[1]["clip_id"], "right-half")
+        self.assertEqual(ops[0]["right_id"], "right-half")
+        fanned = fan_selected_ops(
+            [
+                {"op": "split", "clip_id": "c1", "at_s": 3, "right_id": "right-half"},
+                {"op": "remove", "clip_id": "right-half"},
+            ],
+            ["c1", "c2"],
+        )
+        self.assertEqual(
+            [(op["clip_id"], op["right_id"]) for op in fanned if op["op"] == "split"],
+            [("c1", "c1__right"), ("c2", "c2__right")],
+        )
+        self.assertEqual(
+            [op["clip_id"] for op in fanned if op["op"] == "remove"],
+            ["c1__right", "c2__right"],
+        )
+
+    def test_keep_the_right_removes_the_left_half(self):
+        ops = validate_ops(
+            [{"op": "split", "clip_id": "c1", "at_s": 4}],
+            set(),
+            timeline(),
+            "split and keep the right",
+        )
+        self.assertEqual(ops[0]["op"], "split")
+        self.assertEqual(ops[0]["at_s"], 4.0)
+        self.assertEqual(ops[1], {"op": "remove", "clip_id": ops[0]["left_id"]})
+        self.assertNotIn("right_id", ops[0])
+
+
+
 def _spinning_timeline():
     return {
         "tracks": [{
@@ -406,6 +575,26 @@ def _spinning_timeline():
             }],
         }],
     }
+
+
+def _clip_timeline(**fields):
+    data = timeline()
+    data["tracks"][0]["clips"][0].update(fields)
+    return data
+
+
+def _assert_right_cut(test, result, at_s):
+    split = next(op for op in result["ops"] if op["op"] == "split")
+    remove = next(op for op in result["ops"] if op["op"] == "remove")
+    test.assertEqual(split["clip_id"], "c1")
+    test.assertAlmostEqual(split["at_s"], at_s)
+    test.assertEqual(remove["clip_id"], split["right_id"])
+    test.assertNotEqual(remove["clip_id"], split["clip_id"])
+    test.assertLess(
+        [op["op"] for op in result["ops"]].index("split"),
+        [op["op"] for op in result["ops"]].index("remove"),
+    )
+    test.assertEqual([op["op"] for op in result["ops"]].count("remove"), 1)
 
 
 def _planner(planner):

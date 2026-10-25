@@ -29,6 +29,25 @@ test('an edit before any split stays on the parent', () => {
   )
 })
 
+test('remove of the split parent hits both halves', () => {
+  const pairs = new Map([['c1', { leftId: 'left', rightId: 'right' }]])
+  assert.deepEqual(
+    opsForSplitParents({ op: 'remove', clip_id: 'c1' }, pairs),
+    [
+      { op: 'remove', clip_id: 'left' },
+      { op: 'remove', clip_id: 'right' },
+    ],
+  )
+})
+
+test('remove of the right alias leaves the left half', () => {
+  const pairs = new Map([['c1', { leftId: 'left', rightId: 'right' }]])
+  assert.deepEqual(
+    opsForSplitParents({ op: 'remove', clip_id: 'right' }, pairs),
+    [{ op: 'remove', clip_id: 'right' }],
+  )
+})
+
 test('naming only the right half does not rotate the left half', () => {
   const pairs = new Map([['c1', { leftId: 'left', rightId: 'right' }]])
   assert.deepEqual(

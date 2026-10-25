@@ -52,13 +52,20 @@ Allowed ops (exact names):
 - {"op":"set_motion","clip_id":"...","property":"rotation","from":30,"to":60,"duration_s":3}
 - {"op":"set_motion","clip_id":"...","property":"scale","keys":[{"t_s":0,"value":1},{"t_s":3,"value":2}]}
 
-set_transform rotation is an absolute angle in degrees clockwise. The host stores radians. 180 turns the picture upside down. scale replaces the clip scale. Read the clip's current scale on the timeline. To zoom in, set scale higher than that number. x and y place the clip anchor on the stage, from 0 to 1. Omit any field you are not changing. Use set_transform for a static rotate, zoom, or position. Do not search the library for those.
+set_transform rotation is an absolute angle in degrees clockwise. The host stores radians. 180 turns the picture upside down. scale replaces the clip scale. Read the clip's current scale on the timeline. To zoom in, set scale higher than that number. x and y place the clip anchor on the stage, from 0 to 1. y 0 is the top and y 1 is the bottom. x 0 is the left and x 1 is the right. Omit any field you are not changing. Use set_transform for a static rotate, zoom, or position. Do not search the library for those.
+
+"make it larger and put it in the center" is one set_transform on the selected clip: scale higher than that clip's current scale, plus x 0.5 and y 0.5. Center is 0.5, 0.5. Top-left is 0, 0. Top-right is 1, 0. Bottom-left is 0, 1. Bottom-right is 1, 1. Larger, bigger, and zoom in raise scale. Smaller and zoom out lower it, and scale stays positive. "move it left a bit" lowers x by about 0.1. Right raises x. Up lowers y. Down raises y. "rotate 90" is {"op":"set_transform","clip_id":"...","rotation":90}. "flip upside down" is rotation 180. Never invent op names such as scale, zoom, center, position, resize, move_to, or rotate. Those edits are set_transform.
 
 set_motion animates one property. property is rotation, scale, x, y, or opacity. rotation is degrees clockwise. scale is the same zoom field as set_transform. x and y are stage positions from 0 to 1. opacity is from 0 to 1. Use from, to, and duration_s, or keys with t_s and value. t_s is seconds from the clip start. Send at least two keys. "rotate from 30 to 60 over 3 seconds" and "zoom from 1 to 2 over 3s" are set_motion. A pan while zooming is two set_motion ops. A static set_transform clears motion on the fields it sets.
 
 To extend a rotation, zoom, pan, or other animation to N seconds, send set_motion for that property. Keep the current from and to values and set duration_s to N. "extend the rotation to 8 seconds" is set_motion, not trim. A still or image has no extra source media. Do not trim it to lengthen the animation. The host grows the still's timeline duration to cover the motion. trim changes a video or audio in-point or out-point inside the file, and it cannot run past that file.
 
-When the prompt lists Selected clip_ids, those clips are selected. Prefer those ids for trim, set_transform, set_motion, remove, and split. Cut means split. at_s is seconds on the timeline.
+When the prompt lists Selected clip_ids, those clips are selected. Prefer those ids for trim, set_transform, set_motion, remove, and split. Cut alone means split. at_s is seconds on the timeline. When the prompt lists a Playhead time, "here" is that time.
+
+"split the video here and delete the right part", "cut here and delete the right", "split and keep the left", and "remove everything after the cut" are two ops in this order: split at the playhead, then remove only the new right half.
+{"op":"split","clip_id":"...","at_s":1.5,"right_id":"right-half"}
+{"op":"remove","clip_id":"right-half"}
+Removing the original clip_id after a split deletes both halves. "keep the right", "delete the left", and "remove everything before the cut" use left_id the same way, then remove that alias.
 
 When trimming to a new length, send duration_s only. Omit start_s unless the user asked to move the left edge.
 
@@ -131,7 +138,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_ops",
-        "description": "Queue timeline edits for the host as one undo step. Call this for trim, split, move, remove, set_volume, add_text, update_text, crossfade, set_transform, set_motion, and add_clip. set_transform rotation is degrees clockwise. set_transform scale replaces the clip scale. set_transform x and y are stage positions from 0 to 1. set_motion animates rotation, scale, x, y, or opacity from one value to another. To extend an existing animation to N seconds, send set_motion with the same endpoints and duration_s N. Do not trim a still to lengthen an animation. Titles use add_text on T1. Never invent op names.",
+        "description": "Queue timeline edits for the host as one undo step. Call this for trim, split, move, remove, set_volume, add_text, update_text, crossfade, set_transform, set_motion, and add_clip. set_transform rotation is degrees clockwise. set_transform scale replaces the clip scale. set_transform x and y are stage positions from 0 to 1. Larger, center, zoom, and rotate are set_transform, not new op names. A split that deletes one side also removes that split's right_id or left_id. set_motion animates rotation, scale, x, y, or opacity from one value to another. To extend an existing animation to N seconds, send set_motion with the same endpoints and duration_s N. Do not trim a still to lengthen an animation. Titles use add_text on T1. Never invent op names.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -165,6 +172,7 @@ class TurnState:
     allow: set[str]
     timeline: dict[str, Any]
     command: str = ""
+    playhead_s: float | None = None
     selected_clip_ids: list[str] = field(default_factory=list)
     edit_errors: list[str] = field(default_factory=list)
     hits: list[Item] = field(default_factory=list)
@@ -231,6 +239,11 @@ async def run_command(catalog: Catalog, body: dict[str, Any]) -> dict[str, Any]:
     state = _state_from(catalog, body)
     state.command = command
     state.selected_clip_ids = _selected_ids(body)
+    state.playhead_s = _optional_time(body.get("playhead_s"))
+    if state.playhead_s is None:
+        state.playhead_s = _optional_time(state.timeline.get("playhead_s"))
+    if state.playhead_s is not None:
+        state.timeline = {**state.timeline, "playhead_s": state.playhead_s}
     planner = await _choose_planner()
     if planner is None:
         if _blocks_search(command):
@@ -429,7 +442,10 @@ def _prompt(state: TurnState, command: str) -> str:
     if state.selected_clip_ids:
         joined = ", ".join(state.selected_clip_ids)
         selected = f"\nSelected clip_ids: {joined}. Prefer these ids for trim, rotate, motion, remove, and split."
-    return f"Library:\n{library}{extra}\n\nTimeline:\n{timeline}{selected}\n\nCommand: {command}"
+    playhead = ""
+    if state.playhead_s is not None:
+        playhead = f"\nPlayhead: {state.playhead_s:.3f}s. Use this for \"here\"."
+    return f"Library:\n{library}{extra}\n\nTimeline:\n{timeline}{playhead}{selected}\n\nCommand: {command}"
 
 
 def _compact_timeline(timeline: dict[str, Any]) -> dict[str, Any]:
@@ -459,7 +475,11 @@ def _compact_timeline(timeline: dict[str, Any]) -> dict[str, Any]:
                 row["motion"] = motion
             clips.append(row)
         tracks.append({"track": track.get("alias") or track.get("name"), "kind": track.get("kind"), "clips": clips})
-    return {"stage": timeline.get("stage"), "duration_s": timeline.get("duration_s"), "tracks": tracks}
+    compact: dict[str, Any] = {"stage": timeline.get("stage"), "duration_s": timeline.get("duration_s"), "tracks": tracks}
+    playhead = _optional_time(timeline.get("playhead_s"))
+    if playhead is not None:
+        compact["playhead_s"] = playhead
+    return compact
 
 
 def _parse_e4b_tool_calls(content: object) -> list[Call]:
@@ -722,7 +742,17 @@ async def _execute(state: TurnState, call: Call) -> tuple[dict[str, Any], bytes 
         if name == "transcribe":
             return await _transcribe(state, str(args.get("vault_id") or ""), args.get("start_s"), args.get("end_s")), None
         if name == "apply_ops":
-            ops = fan_selected_ops(validate_ops(args.get("ops"), state.allow), state.selected_clip_ids)
+            ops = fan_selected_ops(
+                validate_ops(
+                    args.get("ops"),
+                    state.allow,
+                    state.timeline,
+                    state.command,
+                    state.playhead_s,
+                    state.selected_clip_ids,
+                ),
+                state.selected_clip_ids,
+            )
             ops = steer_extend_animation(state.command, state.timeline, ops, state.selected_clip_ids)
             label = args.get("label")
             state.ops = ops
@@ -1287,12 +1317,691 @@ class OpError(Exception):
     pass
 
 
-def validate_ops(raw: object, allow: set[str]) -> list[dict[str, Any]]:
+_KNOWN_OPS = frozenset({
+    "crossfade", "set_stage", "add_clip", "add_text", "trim", "split", "move",
+    "remove", "set_volume", "set_transform", "set_motion", "update_text",
+})
+_TRANSFORM_NAMES = frozenset({
+    "scale", "set_scale", "resize", "set_zoom", "zoom", "zoom_in", "zoomin",
+    "zoom_out", "zoomout", "larger", "bigger", "smaller", "make_larger",
+    "make_smaller", "enlarge", "shrink", "center", "centre", "set_center",
+    "set_centre", "position", "set_position", "move_to", "moveto", "set_xy",
+    "translate", "nudge", "rotate", "rotation", "set_rotation", "set_rotate",
+    "flip", "turn", "transform", "settransform", "top_left", "top_right",
+    "bottom_left", "bottom_right",
+})
+_SCALE_UP_NAMES = frozenset({
+    "zoom_in", "zoomin", "larger", "bigger", "make_larger", "enlarge",
+})
+_SCALE_DOWN_NAMES = frozenset({
+    "zoom_out", "zoomout", "smaller", "make_smaller", "shrink",
+})
+_SCALE_UP_WORDS = frozenset({
+    "larger", "bigger", "enlarge", "in", "zoom_in", "zoomin", "up",
+})
+_SCALE_DOWN_WORDS = frozenset({
+    "smaller", "shrink", "out", "zoom_out", "zoomout", "down",
+})
+_ANCHORS: dict[str, tuple[float | None, float | None]] = {
+    "center": (0.5, 0.5),
+    "centre": (0.5, 0.5),
+    "middle": (0.5, 0.5),
+    "top left": (0.0, 0.0),
+    "top-left": (0.0, 0.0),
+    "topleft": (0.0, 0.0),
+    "upper left": (0.0, 0.0),
+    "top right": (1.0, 0.0),
+    "top-right": (1.0, 0.0),
+    "topright": (1.0, 0.0),
+    "upper right": (1.0, 0.0),
+    "bottom left": (0.0, 1.0),
+    "bottom-left": (0.0, 1.0),
+    "bottomleft": (0.0, 1.0),
+    "lower left": (0.0, 1.0),
+    "bottom right": (1.0, 1.0),
+    "bottom-right": (1.0, 1.0),
+    "bottomright": (1.0, 1.0),
+    "lower right": (1.0, 1.0),
+    "top": (None, 0.0),
+    "bottom": (None, 1.0),
+    "left": (0.0, None),
+    "right": (1.0, None),
+}
+_NAME_ANCHORS = {
+    "center": (0.5, 0.5),
+    "centre": (0.5, 0.5),
+    "set_center": (0.5, 0.5),
+    "set_centre": (0.5, 0.5),
+    "top_left": (0.0, 0.0),
+    "top_right": (1.0, 0.0),
+    "bottom_left": (0.0, 1.0),
+    "bottom_right": (1.0, 1.0),
+}
+_MOTION_FROM_NAME = {
+    "zoom": "scale",
+    "zoom_in": "scale",
+    "zoom_out": "scale",
+    "scale": "scale",
+    "resize": "scale",
+    "rotate": "rotation",
+    "rotation": "rotation",
+    "turn": "rotation",
+    "pan": "x",
+    "fade": "opacity",
+}
+_LAYOUT_RE = re.compile(
+    r"\b(?:larger|bigger|smaller|enlarge|shrink|zoom|center|centre|rotate|rotation|upside|scale|flip)\b"
+    r"|\b(?:move|nudge)\s+(?:it|this|that|the\s+\w+\s+)?(?:left|right|up|down)\b"
+    r"|\b(?:put|place)\s+(?:it|this|that|the\s+(?:clip|video|image|title|text))\b[^.]{0,40}\b(?:center|centre|middle|left|right|top|bottom)\b",
+    re.IGNORECASE,
+)
+_SCALE_STEP = 1.5
+_NUDGE = 0.1
+
+
+def _prepare_model_ops(
+    raw: list[object],
+    timeline: dict[str, Any],
+    command: str,
+    playhead_s: float | None,
+    selected: list[str],
+) -> list[object]:
+    ops: list[object] = []
+    for item in raw:
+        if isinstance(item, dict):
+            ops.append(_alias_op(item, timeline, command, selected))
+        else:
+            ops.append(item)
+    ops = _apply_layout_intent(ops, command, timeline, selected)
+    return _ensure_side_cut(ops, command, timeline, playhead_s, selected)
+
+
+def _alias_op(raw: dict[str, Any], timeline: dict[str, Any], command: str, selected: list[str]) -> dict[str, Any]:
+    name = raw.get("op")
+    if not isinstance(name, str):
+        return raw
+    key = re.sub(r"[\s\-]+", "_", name.strip().lower())
+    if key in _KNOWN_OPS:
+        if key == "set_transform":
+            return _as_transform(raw, key, timeline, command, selected)
+        if key == "set_motion":
+            copied = dict(raw)
+            if copied.get("property") == "zoom":
+                copied["property"] = "scale"
+            return copied
+        if key == "split":
+            return _alias_split(raw)
+        return raw
+    if key in {"delete", "delete_clip"}:
+        return {**raw, "op": "remove"}
+    if key in {"delete_right", "remove_right", "drop_right", "delete_left", "remove_left", "drop_left"}:
+        return {**raw, "op": "remove"}
+    if key in {"cut", "split_clip"}:
+        return _alias_split({**raw, "op": "split"})
+    if _looks_like_motion(raw) and (key in _TRANSFORM_NAMES or key in {"animate", "pan", "fade"}):
+        return _as_motion(raw, key, selected)
+    if key in _TRANSFORM_NAMES or _unknown_transform(key, raw):
+        return _as_transform(raw, key, timeline, command, selected)
+    return raw
+
+
+def _alias_split(raw: dict[str, Any]) -> dict[str, Any]:
+    out = dict(raw)
+    out["op"] = "split"
+    if out.get("at_s") is None:
+        for alias in ("time", "time_s", "playhead_s", "t"):
+            if out.get(alias) is not None:
+                out["at_s"] = out[alias]
+                break
+    return out
+
+
+def _unknown_transform(key: str, raw: dict[str, Any]) -> bool:
+    if re.search(r"scale|zoom|resize|center|centre|position|rotate|transform|larger|smaller|nudge|flip", key):
+        return True
+    fields = ("scale", "zoom", "rotation", "degrees", "angle", "rotation_deg", "x", "y", "position", "pos")
+    return any(field in raw and raw[field] is not None for field in fields)
+
+
+def _looks_like_motion(raw: dict[str, Any]) -> bool:
+    keys = raw.get("keys")
+    if isinstance(keys, list) and len(keys) >= 2:
+        return True
+    return all(raw.get(key) is not None for key in ("from", "to", "duration_s"))
+
+
+def _as_motion(raw: dict[str, Any], key: str, selected: list[str]) -> dict[str, Any]:
+    prop = raw.get("property")
+    if prop == "zoom":
+        prop = "scale"
+    if not isinstance(prop, str) or not prop.strip():
+        prop = _MOTION_FROM_NAME.get(key, "")
+    out: dict[str, Any] = {"op": "set_motion", "property": prop}
+    clip_id = _text_id(raw.get("clip_id")) or _text_id(raw.get("id"))
+    if len(selected) == 1:
+        clip_id = selected[0]
+    if clip_id:
+        out["clip_id"] = clip_id
+    for field in ("from", "to", "duration_s", "keys"):
+        if field in raw and raw[field] is not None:
+            out[field] = raw[field]
+    return out
+
+
+def _as_transform(
+    raw: dict[str, Any],
+    key: str,
+    timeline: dict[str, Any],
+    command: str,
+    selected: list[str],
+) -> dict[str, Any]:
+    out: dict[str, Any] = {"op": "set_transform"}
+    clip_id = _text_id(raw.get("clip_id")) or _text_id(raw.get("id")) or _text_id(raw.get("target"))
+    if len(selected) == 1:
+        clip_id = selected[0]
+    if clip_id:
+        out["clip_id"] = clip_id
+    current_scale = _clip_metric(timeline, clip_id, "scale", 1.0)
+    if key in {"flip", "upside_down"} or _text_says_upside(raw):
+        out["rotation"] = 180.0
+    else:
+        rotation = _first_present(raw, ("rotation", "degrees", "angle", "deg", "rotation_deg"))
+        number = _finite_or_none(rotation)
+        if number is not None:
+            out["rotation"] = number
+    scale_raw = _first_present(raw, ("scale", "zoom", "factor", "size"))
+    scale = _scale_value(scale_raw, current_scale)
+    if scale is None and key in _SCALE_UP_NAMES:
+        scale = _bumped_scale(current_scale, "up")
+    if scale is None and key in _SCALE_DOWN_NAMES:
+        scale = _bumped_scale(current_scale, "down")
+    if scale is not None:
+        out["scale"] = scale
+    if key in _NAME_ANCHORS:
+        _write_anchor(out, _NAME_ANCHORS[key])
+    _apply_anchor(out, raw)
+    for axis in ("x", "y"):
+        value = raw.get(axis)
+        if value is None:
+            continue
+        number = _finite_or_none(value)
+        if number is not None:
+            out[axis] = number
+        elif isinstance(value, str):
+            _apply_anchor(out, {"position": value})
+    _apply_nudge(out, raw, timeline, command)
+    return out
+
+
+def _apply_layout_intent(
+    ops: list[object],
+    command: str,
+    timeline: dict[str, Any],
+    selected: list[str],
+) -> list[object]:
+    intent = _layout_intent(command)
+    if not intent:
+        return ops
+    transforms = [op for op in ops if isinstance(op, dict) and op.get("op") == "set_transform"]
+    if not transforms:
+        return ops
+    clip_id = _text_id(transforms[0].get("clip_id"))
+    if len(selected) == 1:
+        clip_id = selected[0]
+        for op in transforms:
+            op["clip_id"] = clip_id
+    current = _clip_metric(timeline, clip_id, "scale", 1.0)
+    direction = intent.get("scale")
+    if direction == "up" and not any(_scale_compared(op, current, "up") for op in transforms):
+        host = next((op for op in transforms if "scale" not in op), transforms[0])
+        host["scale"] = _bumped_scale(current, "up")
+    elif direction == "down" and not any(_scale_compared(op, current, "down") for op in transforms):
+        host = next((op for op in transforms if "scale" not in op), transforms[0])
+        host["scale"] = _bumped_scale(current, "down")
+    if "x" in intent and not any("x" in op for op in transforms):
+        transforms[0]["x"] = intent["x"]
+    if "y" in intent and not any("y" in op for op in transforms):
+        transforms[0]["y"] = intent["y"]
+    if "rotation" in intent and not any("rotation" in op for op in transforms):
+        transforms[0]["rotation"] = intent["rotation"]
+    nudge = intent.get("nudge")
+    if nudge in {"left", "right"} and not any("x" in op for op in transforms):
+        _apply_nudge(transforms[0], {"direction": nudge}, timeline, "")
+    elif nudge in {"up", "down"} and not any("y" in op for op in transforms):
+        _apply_nudge(transforms[0], {"direction": nudge}, timeline, "")
+    return ops
+
+
+def _layout_intent(command: str) -> dict[str, Any]:
+    text = command.lower()
+    intent: dict[str, Any] = {}
+    for phrase, pair in (
+        ("top left", (0.0, 0.0)),
+        ("top-left", (0.0, 0.0)),
+        ("upper left", (0.0, 0.0)),
+        ("top right", (1.0, 0.0)),
+        ("top-right", (1.0, 0.0)),
+        ("upper right", (1.0, 0.0)),
+        ("bottom left", (0.0, 1.0)),
+        ("bottom-left", (0.0, 1.0)),
+        ("lower left", (0.0, 1.0)),
+        ("bottom right", (1.0, 1.0)),
+        ("bottom-right", (1.0, 1.0)),
+        ("lower right", (1.0, 1.0)),
+    ):
+        if phrase in text:
+            intent["x"], intent["y"] = pair
+            break
+    if "x" not in intent and re.search(r"\b(center|centre|middle)\b", text):
+        intent["x"] = 0.5
+        intent["y"] = 0.5
+    if re.search(r"\b(larger|bigger|enlarge)\b|\bzoom\s+in\b", text):
+        intent["scale"] = "up"
+    elif re.search(r"\b(smaller|shrink)\b|\bzoom\s+out\b", text):
+        intent["scale"] = "down"
+    if re.search(r"\bupside\s+down\b|\bflip\b", text):
+        intent["rotation"] = 180.0
+    elif not re.search(r"\bfrom\b.+\bto\b", text):
+        match = re.search(r"\brotate\b[^\d\-]{0,40}(-?\d+(?:\.\d+)?)", text)
+        if match:
+            intent["rotation"] = float(match.group(1))
+    if re.search(r"\b(a bit|a little|slightly|nudge)\b", text):
+        for word in ("left", "right", "up", "down"):
+            if re.search(rf"\b{word}\b", text):
+                intent["nudge"] = word
+                break
+    return intent
+
+
+def _ensure_side_cut(
+    ops: list[object],
+    command: str,
+    timeline: dict[str, Any],
+    playhead: float | None,
+    selected: list[str],
+) -> list[object]:
+    side = _discarded_side(command)
+    if side is None:
+        return ops
+    wants_cut = re.search(r"\b(?:split|cut)\b", command.lower()) is not None
+    has_split = any(isinstance(op, dict) and op.get("op") == "split" for op in ops)
+    if not wants_cut and not has_split:
+        return ops
+    field = "right_id" if side == "right" else "left_id"
+    base = "right-half" if side == "right" else "left-half"
+    working: list[Any] = [dict(op) if isinstance(op, dict) else op for op in ops]
+    if not has_split:
+        clip_id = _cut_target(timeline, playhead, selected)
+        at = _split_at({}, command, playhead, timeline, clip_id) if clip_id else None
+        if clip_id and at is not None:
+            working.append({"op": "split", "clip_id": clip_id, "at_s": at})
+    used: set[str] = set()
+    planned: list[dict[str, Any]] = []
+    for op in working:
+        if not isinstance(op, dict) or op.get("op") != "split":
+            continue
+        clip_id = _text_id(op.get("clip_id"))
+        if clip_id is None:
+            continue
+        if len(selected) == 1:
+            clip_id = selected[0]
+        at = _split_at(op, command, playhead, timeline, clip_id)
+        existing = _text_id(op.get(field))
+        side_id = existing if existing else _unique_side(base, used)
+        used.add(side_id)
+        updated = {**op, "op": "split", "clip_id": clip_id, field: side_id}
+        if at is not None:
+            updated["at_s"] = at
+        op.clear()
+        op.update(updated)
+        planned.append(op)
+    if not planned:
+        return working
+    parent_side = {op.get("clip_id"): op.get(field) for op in planned}
+    side_ids = {side_id for side_id in parent_side.values() if isinstance(side_id, str)}
+    known = _known_clip_ids(timeline)
+
+    def side_remove_target(op: dict[str, Any]) -> str | None:
+        if op.get("op") != "remove":
+            return None
+        cid = op.get("clip_id")
+        if not isinstance(cid, str):
+            return None
+        if cid in side_ids:
+            return cid
+        if cid in parent_side and isinstance(parent_side[cid], str):
+            return parent_side[cid]
+        if cid not in known and len(side_ids) == 1:
+            return next(iter(side_ids))
+        return None
+
+    output: list[Any] = []
+    emitted: set[str] = set()
+    planned_ids = {id(op) for op in planned}
+    for op in working:
+        if isinstance(op, dict) and id(op) in planned_ids:
+            output.append(op)
+            side_id = parent_side.get(op.get("clip_id"))
+            if isinstance(side_id, str) and side_id not in emitted:
+                output.append({"op": "remove", "clip_id": side_id})
+                emitted.add(side_id)
+            continue
+        if isinstance(op, dict) and side_remove_target(op) is not None:
+            continue
+        output.append(op)
+    return output
+
+
+def _discarded_side(command: str) -> str | None:
+    text = " ".join(command.lower().split())
+    keep_left = re.search(r"\bkeep\b.{0,40}\bleft\b", text) is not None
+    keep_right = re.search(r"\bkeep\b.{0,40}\bright\b", text) is not None
+    if keep_left and not keep_right:
+        return "right"
+    if keep_right and not keep_left:
+        return "left"
+    if re.search(r"\b(?:delete|remove|drop|discard|trash)\b.{0,40}\bright\b", text):
+        return "right"
+    if re.search(r"\b(?:delete|remove|drop|discard|trash)\b.{0,40}\bleft\b", text):
+        return "left"
+    if re.search(r"\b(?:everything|the rest|rest)\b.{0,24}\bafter\b|\bafter the cut\b", text):
+        return "right"
+    if re.search(r"\b(?:everything|the rest|rest)\b.{0,24}\bbefore\b|\bbefore the cut\b", text):
+        return "left"
+    return None
+
+
+def _split_at(
+    op: dict[str, Any],
+    command: str,
+    playhead: float | None,
+    timeline: dict[str, Any],
+    clip_id: str | None,
+) -> float | None:
+    if clip_id and _mentions_here(command) and _inside(playhead, timeline, clip_id):
+        return float(playhead) if playhead is not None else None
+    existing = _finite_or_none(op.get("at_s"))
+    if existing is not None:
+        return existing
+    if clip_id and _inside(playhead, timeline, clip_id):
+        return float(playhead) if playhead is not None else None
+    span = _span(_clip_record(timeline, clip_id) if clip_id else None)
+    if span is None:
+        return None
+    start, end = span
+    return (start + end) / 2
+
+
+def _mentions_here(command: str) -> bool:
+    return re.search(r"\b(?:here|playhead)\b", command.lower()) is not None
+
+
+def _cut_target(timeline: dict[str, Any], playhead: float | None, selected: list[str]) -> str | None:
+    if len(selected) == 1:
+        return selected[0]
+    under = _clip_under_playhead(timeline, playhead)
+    if under:
+        return under
+    for clip in _iter_clips(timeline):
+        if clip.get("type") == "video":
+            return _text_id(clip.get("alias")) or _text_id(clip.get("id"))
+    for clip in _iter_clips(timeline):
+        found = _text_id(clip.get("alias")) or _text_id(clip.get("id"))
+        if found:
+            return found
+    return None
+
+
+def _clip_under_playhead(timeline: dict[str, Any], playhead: float | None) -> str | None:
+    if playhead is None:
+        return None
+    fallback: str | None = None
+    for clip in _iter_clips(timeline):
+        span = _span(clip)
+        if span is None or not (span[0] < playhead < span[1]):
+            continue
+        found = _text_id(clip.get("alias")) or _text_id(clip.get("id"))
+        if clip.get("type") == "video" and found:
+            return found
+        fallback = fallback or found
+    return fallback
+
+
+def _inside(playhead: float | None, timeline: dict[str, Any], clip_id: str) -> bool:
+    if playhead is None:
+        return False
+    span = _span(_clip_record(timeline, clip_id))
+    if span is None:
+        return False
+    start, end = span
+    return start < playhead < end
+
+
+def _clip_record(timeline: dict[str, Any], clip_id: str | None) -> dict[str, Any] | None:
+    if not clip_id:
+        return None
+    for clip in _iter_clips(timeline):
+        if clip_id in {clip.get("id"), clip.get("alias")}:
+            return clip
+    return None
+
+
+def _iter_clips(timeline: dict[str, Any]):
+    for track in timeline.get("tracks") or []:
+        if not isinstance(track, dict):
+            continue
+        for clip in track.get("clips") or []:
+            if isinstance(clip, dict):
+                yield clip
+
+
+def _span(clip: dict[str, Any] | None) -> tuple[float, float] | None:
+    if clip is None:
+        return None
+    start = _finite_or_none(clip.get("start_s"))
+    duration = _finite_or_none(clip.get("duration_s"))
+    if start is None or duration is None or duration <= 0:
+        return None
+    return start, start + duration
+
+
+def _known_clip_ids(timeline: dict[str, Any]) -> set[str]:
+    found: set[str] = set()
+    for clip in _iter_clips(timeline):
+        for key in ("id", "alias"):
+            text = _text_id(clip.get(key))
+            if text:
+                found.add(text)
+    return found
+
+
+def _clip_metric(timeline: dict[str, Any], clip_id: str | None, key: str, default: float) -> float:
+    clip = _clip_record(timeline, clip_id)
+    if clip is None:
+        return default
+    number = _finite_or_none(clip.get(key))
+    if number is None or (key == "scale" and number <= 0):
+        return default
+    return number
+
+
+def _scale_value(value: object, current: float) -> float | None:
+    if isinstance(value, str):
+        word = value.strip().lower().replace("-", "_").replace(" ", "_")
+        if word in _SCALE_UP_WORDS:
+            return _bumped_scale(current, "up")
+        if word in _SCALE_DOWN_WORDS:
+            return _bumped_scale(current, "down")
+    return _finite_or_none(value)
+
+
+def _bumped_scale(current: float, direction: str) -> float:
+    base = current if current > 0 else 1.0
+    if direction == "down":
+        nxt = base / _SCALE_STEP
+        return nxt if 0 < nxt < base else base * 0.5
+    return base * _SCALE_STEP
+
+
+def _scale_compared(op: dict[str, Any], current: float, direction: str) -> bool:
+    scale = _finite_or_none(op.get("scale"))
+    if scale is None or scale <= 0:
+        return False
+    if direction == "down":
+        return scale < current
+    return scale > current
+
+
+def _apply_anchor(out: dict[str, Any], raw: dict[str, Any]) -> None:
+    for key in ("position", "pos", "anchor", "place"):
+        value = raw.get(key)
+        if isinstance(value, str):
+            pair = _anchor_pair(value)
+            if pair is not None:
+                _write_anchor(out, pair)
+                return
+
+
+def _anchor_pair(value: str) -> tuple[float | None, float | None] | None:
+    word = " ".join(value.strip().lower().replace("_", " ").split())
+    return _ANCHORS.get(word) or _ANCHORS.get(word.replace(" ", "-")) or _ANCHORS.get(word.replace(" ", ""))
+
+
+def _write_anchor(out: dict[str, Any], pair: tuple[float | None, float | None]) -> None:
+    x, y = pair
+    if x is not None:
+        out["x"] = x
+    if y is not None:
+        out["y"] = y
+
+
+def _apply_nudge(out: dict[str, Any], raw: dict[str, Any], timeline: dict[str, Any], command: str) -> None:
+    direction = _nudge_direction(raw, command)
+    if direction is None:
+        return
+    clip_id = _text_id(out.get("clip_id"))
+    if direction in {"left", "right"} and _finite_or_none(raw.get("x")) is None:
+        current = _clip_metric(timeline, clip_id, "x", 0.5)
+        delta = -_NUDGE if direction == "left" else _NUDGE
+        out["x"] = _clamp01(current + delta)
+    elif direction in {"up", "down"} and _finite_or_none(raw.get("y")) is None:
+        current = _clip_metric(timeline, clip_id, "y", 0.5)
+        delta = -_NUDGE if direction == "up" else _NUDGE
+        out["y"] = _clamp01(current + delta)
+
+
+def _nudge_direction(raw: dict[str, Any], command: str) -> str | None:
+    direction = raw.get("direction") or raw.get("dir")
+    if isinstance(direction, str) and direction.strip().lower() in {"left", "right", "up", "down"}:
+        return direction.strip().lower()
+    blob = f"{raw.get('op', '')} {command}".lower()
+    if re.search(r"\b(?:a bit|a little|slightly|nudge)\b", blob) is None:
+        return None
+    match = re.search(r"\b(left|right|up|down)\b", blob)
+    return match.group(1) if match else None
+
+
+def _text_says_upside(raw: dict[str, Any]) -> bool:
+    for key in ("direction", "rotation", "position", "flip"):
+        value = raw.get(key)
+        if isinstance(value, str) and "upside" in value.lower():
+            return True
+    return False
+
+
+def _first_present(raw: dict[str, Any], keys: tuple[str, ...]) -> object:
+    for key in keys:
+        if key in raw and raw[key] is not None:
+            return raw[key]
+    return None
+
+
+def _text_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _unique_side(base: str, used: set[str]) -> str:
+    if base not in used:
+        return base
+    number = 2
+    while f"{base}-{number}" in used:
+        number += 1
+    return f"{base}-{number}"
+
+
+def _split_side_ids(ops: list[dict[str, Any]]) -> set[str]:
+    found: set[str] = set()
+    for op in ops:
+        if op.get("op") != "split":
+            continue
+        for key in ("left_id", "right_id"):
+            text = _text_id(op.get(key))
+            if text:
+                found.add(text)
+    return found
+
+
+def _fanned_side_id(ops: list[dict[str, Any]], side_id: str, target: str) -> str:
+    for op in ops:
+        if op.get("op") != "split":
+            continue
+        if op.get("right_id") == side_id:
+            return f"{target}__right"
+        if op.get("left_id") == side_id:
+            return f"{target}__left"
+    return side_id
+
+
+def _is_layout_edit(text: str) -> bool:
+    return _LAYOUT_RE.search(text) is not None
+
+
+def _optional_time(value: object) -> float | None:
+    number = _finite_or_none(value)
+    if number is None or number < 0:
+        return None
+    return number
+
+
+def _finite_or_none(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            value = float(text)
+        except ValueError:
+            return None
+    if isinstance(value, (int, float)) and value == value and value not in (float("inf"), float("-inf")):
+        return float(value)
+    return None
+
+
+def _clamp01(value: float) -> float:
+    return min(1.0, max(0.0, value))
+
+
+def validate_ops(
+    raw: object,
+    allow: set[str],
+    timeline: dict[str, Any] | None = None,
+    command: str = "",
+    playhead_s: float | None = None,
+    selected: list[str] | None = None,
+) -> list[dict[str, Any]]:
     if not isinstance(raw, list) or not raw:
         raise OpError("ops must be a non-empty list.")
     if len(raw) > 40:
         raise OpError("Too many ops.")
-    return [_validate_op(op, allow) for op in raw]
+    prepared = _prepare_model_ops(raw, timeline or {}, command, playhead_s, selected or [])
+    if len(prepared) > 40:
+        raise OpError("Too many ops.")
+    return [_validate_op(op, allow) for op in prepared]
 
 
 def _validate_op(raw: object, allow: set[str]) -> dict[str, Any]:
@@ -1456,6 +2165,7 @@ _EDIT_TOKENS = (
     "trim", "cut", "split", "move", "remove", "delete", "rotate", "rotation", "volume",
     "mute", "text", "title", "caption", "subtitle", "export", "fade", "crossfade", "speed", "zoom", "scale",
     "pan", "opacity", "animate", "animation", "extend", "lengthen", "spin",
+    "larger", "bigger", "smaller", "center", "centre", "flip",
 )
 _FIND_TOKENS = ("find", "search", "look for", "show me", "footage", "clip of", "video of")
 _SELECTION_OPS = frozenset({"trim", "set_transform", "set_motion", "remove", "split"})
@@ -1473,6 +2183,10 @@ def _has_any(text: str, tokens: tuple[str, ...]) -> bool:
 
 
 def _wants_place(text: str) -> bool:
+    if re.search(r"\b(?:place|add|insert|drop)\b", text):
+        return _PLACE_RE.search(text) is not None
+    if _is_layout_edit(text) and not _has_any(text, _FIND_TOKENS):
+        return False
     return _PLACE_RE.search(text) is not None
 
 
@@ -1480,6 +2194,8 @@ def _blocks_search(command: str) -> bool:
     text = command.lower()
     if _wants_place(text) or _has_any(text, _FIND_TOKENS):
         return False
+    if _is_layout_edit(text):
+        return True
     return _has_any(text, _EDIT_TOKENS)
 
 
@@ -1512,20 +2228,36 @@ def fan_selected_ops(ops: list[dict[str, Any]], selected: list[str]) -> list[dic
     One selected id keeps the miss-only rule: rewrite a foreign clip_id, and
     leave an id that is already selected alone. Two or more selected ids also
     rewrite an op that already names one of them. move is never copied.
+    A remove of a split's left_id or right_id stays on that half. Rewriting it
+    to the parent clip deletes both halves.
     """
     if not selected:
         return ops
     chosen = set(selected)
     multi = len(selected) >= 2
+    side_ids = _split_side_ids(ops)
     rewritten: list[dict[str, Any]] = []
     for op in ops:
         name = op.get("op")
         clip_id = op.get("clip_id")
+        if isinstance(clip_id, str) and clip_id in side_ids:
+            if not multi:
+                rewritten.append(op)
+                continue
+            for target in selected:
+                rewritten.append({**op, "clip_id": _fanned_side_id(ops, clip_id, target)})
+            continue
         if name not in _SELECTION_OPS or not isinstance(clip_id, str) or (clip_id in chosen and not multi):
             rewritten.append(op)
             continue
         for target in selected:
-            rewritten.append({**op, "clip_id": target})
+            cloned = {**op, "clip_id": target}
+            if name == "split" and multi:
+                for key, label in (("right_id", "right"), ("left_id", "left")):
+                    current = op.get(key)
+                    if isinstance(current, str) and current in side_ids:
+                        cloned[key] = f"{target}__{label}"
+            rewritten.append(cloned)
     unique: list[dict[str, Any]] = []
     seen: set[str] = set()
     for op in rewritten:

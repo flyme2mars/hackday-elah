@@ -75,7 +75,7 @@ import {
   wrapDegrees,
 } from './host/rotate.ts'
 import { timelineShortcut } from './host/shortcuts.ts'
-import { FPS } from './host/types.ts'
+import { FPS, frameCountToSeconds } from './host/types.ts'
 import {
   commandErrorLine,
   commandStatusLine,
@@ -301,6 +301,7 @@ function EditorShell({ boot }: { boot: ProjectSnapshot | null }) {
         before,
         listLibraryAssets(),
         selected,
+        frameCountToSeconds(playbackStore.getState().currentFrame, before.fps || FPS),
       )
       if (project.generation() !== generation) return
       if (result.ops.length > 0) {

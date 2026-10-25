@@ -24,6 +24,7 @@ export async function runCommand(
   timeline: TimelineSnapshot,
   library: readonly LibraryAsset[],
   selectedClipIds: readonly string[] = [],
+  playheadS?: number,
 ): Promise<CommandResult> {
   const response = await fetch('/api/v1/command', {
     method: 'POST',
@@ -33,6 +34,7 @@ export async function runCommand(
       timeline,
       library: library.map(toPayload),
       selected_clip_ids: selectedClipIds,
+      ...(typeof playheadS === 'number' && Number.isFinite(playheadS) ? { playhead_s: playheadS } : {}),
     }),
     signal: AbortSignal.timeout(COMMAND_TIMEOUT_MS),
   })
