@@ -258,6 +258,53 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["ops"], [{"op": "set_transform", "clip_id": "c1", "scale": 2.0}])
         self.assertEqual(result["hits"]["video"], [])
 
+    async def test_several_selected_clips_fan_out_when_the_model_names_one(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [
+                {"op": "set_transform", "clip_id": "c1", "rotation": 30},
+                {"op": "set_transform", "clip_id": "c1", "scale": 2},
+                {"op": "set_motion", "clip_id": "c1", "property": "rotation", "from": 30, "to": 60, "duration_s": 1},
+                {"op": "move", "clip_id": "other", "start_s": 1},
+            ]})], contents, messages
+
+        body = {
+            "command": "rotate and zoom the selected clips",
+            "timeline": timeline(),
+            "library": [],
+            "selected_clip_ids": ["c1", "c2"],
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(catalog(), body)
+        self.assertEqual(
+            [op["clip_id"] for op in result["ops"] if op["op"] == "set_transform" and op.get("rotation") == 30.0],
+            ["c1", "c2"],
+        )
+        self.assertEqual(
+            [op["clip_id"] for op in result["ops"] if op["op"] == "set_transform" and op.get("scale") == 2.0],
+            ["c1", "c2"],
+        )
+        motions = [op for op in result["ops"] if op["op"] == "set_motion"]
+        self.assertEqual([op["clip_id"] for op in motions], ["c1", "c2"])
+        self.assertEqual(motions[0]["keys"], [{"t_s": 0.0, "value": 30.0}, {"t_s": 1.0, "value": 60.0}])
+        self.assertEqual(result["ops"][-1], {"op": "move", "clip_id": "other", "start_s": 1.0})
+        self.assertEqual(len(result["ops"]), 7)
+
+    async def test_named_selected_clip_stays_a_single_op(self):
+        async def planner(contents, messages):
+            return [Call("apply_ops", {"ops": [
+                {"op": "set_transform", "clip_id": "c1", "rotation": 30},
+            ]})], contents, messages
+
+        body = {
+            "command": "rotate this clip 30",
+            "timeline": timeline(),
+            "library": [],
+            "selected_clip_ids": ["c1"],
+        }
+        with patch("sense.planner._choose_planner", _planner(planner)):
+            result = await run_command(catalog(), body)
+        self.assertEqual(result["ops"], [{"op": "set_transform", "clip_id": "c1", "rotation": 30.0}])
+
 
 def _planner(planner):
     async def choose():
