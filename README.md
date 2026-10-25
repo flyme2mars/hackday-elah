@@ -86,7 +86,7 @@ Set `SENSE_MLX_DIR`, `SENSE_MLX_PYTHON`, or `SENSE_PYTHON` to override the check
 or interpreters. The MLX command runs from its checkout with its venv on `PATH`
 and must serve `/health` on port 8787.
 
-It loads the local, gitignored `.gemini.env`, waits for MLX, Sense and Vite,
+It loads the local, gitignored `.do.env` and `.gemini.env` when those files are present, waits for MLX, Sense and Vite,
 prints Sense health and the editor URL, and stays in the foreground. Ctrl-C
 stops the processes it started. Missing dependencies, occupied ports and startup
 timeouts fail explicitly; logs go into a temporary directory printed at startup.

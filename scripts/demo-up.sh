@@ -43,6 +43,12 @@ for port in (8787, 8765, 43123):
 PY
 
 cd "$REPO_DIR"
+# Gitignored planner keys. Skip a file when it is absent. Never commit these.
+if [[ -f .do.env ]]; then
+  set -a
+  source .do.env
+  set +a
+fi
 if [[ -f .gemini.env ]]; then
   set -a
   source .gemini.env

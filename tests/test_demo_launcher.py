@@ -102,6 +102,59 @@ exec {shlex.quote(sys.executable)} "$@"
         self.assertIn("mlx did not become ready", result.stderr)
         self.assert_ports_released()
 
+    def test_sources_do_and_gemini_env_when_present(self):
+        do_file = REPO / ".do.env"
+        gemini_file = REPO / ".gemini.env"
+        if do_file.exists() or gemini_file.exists():
+            self.skipTest("local planner env files are present")
+        self.fixtures()
+        marker = self.root / "seen-env.json"
+        service = self.root / "service.py"
+        service.write_text(
+            "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text(json.dumps({{\n"
+            '    "DO_MODEL_KEY": os.environ.get("DO_MODEL_KEY", ""),\n'
+            '    "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", ""),\n'
+            "}))\n"
+            "class Handler(BaseHTTPRequestHandler):\n"
+            "    def do_GET(self):\n"
+            "        self.send_response(200)\n"
+            "        self.send_header('Content-Type', 'application/json')\n"
+            "        self.end_headers()\n"
+            "        self.wfile.write(b'{\"vault_present\":true,\"item_count\":3,\"embeddings\":\"offline\"}')\n"
+            "HTTPServer.allow_reuse_address = True\n"
+            "HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()\n"
+        )
+        do_file.write_text("DO_MODEL_KEY=test-do-not-a-secret\n")
+        gemini_file.write_text("GEMINI_API_KEY=test-gemini-not-a-secret\n")
+        self.addCleanup(do_file.unlink, missing_ok=True)
+        self.addCleanup(gemini_file.unlink, missing_ok=True)
+        with tempfile.TemporaryFile(mode="w+") as output:
+            process = subprocess.Popen(
+                [str(SCRIPT)], env=self.env, stdout=output, stderr=output, start_new_session=True
+            )
+            try:
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    if marker.is_file():
+                        break
+                    if process.poll() is not None:
+                        output.seek(0)
+                        self.fail(f"Launcher exited before env was visible:\n{output.read()}")
+                    time.sleep(0.1)
+                else:
+                    output.seek(0)
+                    self.fail(f"Child did not observe planner env:\n{output.read()}")
+                seen = json.loads(marker.read_text())
+                self.assertEqual(seen["DO_MODEL_KEY"], "test-do-not-a-secret")
+                self.assertEqual(seen["GEMINI_API_KEY"], "test-gemini-not-a-secret")
+            finally:
+                process.send_signal(signal.SIGTERM)
+                process.wait(timeout=10)
+        self.assert_ports_released()
+
     def test_full_start_health_and_shutdown(self):
         self.fixtures()
         with tempfile.TemporaryFile(mode="w+") as output:
