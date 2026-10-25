@@ -36,11 +36,23 @@ try {
     await input.press('Enter')
     await page.waitForFunction(() => document.querySelector('.command-input').value === '' && !document.querySelector('.command-input').disabled)
   }
-  await page.getByRole('button', { name: /^Flower/ }).waitFor()
-  await command('place two clips', [
-    { op: 'add_clip', vault_id: 'flower.mp4', clip_id: 'a', track: 'V1', start_s: 0, duration_s: 2 },
-    { op: 'add_clip', vault_id: 'bunny.mp4', clip_id: 'b', track: 'V1', start_s: 2, duration_s: 2 },
-  ])
+  await page.getByText('Your library is empty', { exact: true }).waitFor()
+  assert.equal(await page.getByRole('button', { name: /^Flower/ }).count(), 0)
+  const sampleHits = {
+    video: [
+      { vault_id: 'flower.mp4', name: 'Flower', kind: 'video', duration_s: 5, src: '/samples/flower.mp4' },
+      { vault_id: 'bunny.mp4', name: 'Bunny', kind: 'video', duration_s: 8, src: '/samples/bunny.mp4' },
+    ],
+  }
+  await command(
+    'place two clips',
+    [
+      { op: 'add_clip', vault_id: 'flower.mp4', clip_id: 'a', track: 'V1', start_s: 0, duration_s: 2 },
+      { op: 'add_clip', vault_id: 'bunny.mp4', clip_id: 'b', track: 'V1', start_s: 2, duration_s: 2 },
+    ],
+    { hits: sampleHits },
+  )
+  await page.waitForFunction(() => document.querySelectorAll('[data-clip-type="video"]').length === 2)
   await command('add title Hello at the start for 2 seconds', [{ op: 'add_text', clip_id: 'title1', content: 'Hello', start_s: 0, duration_s: 2 }])
   assert.equal((await snapshot()).tracks.find((t) => t.alias === 'T1').clips[0].content, 'Hello')
   await page.getByText('Title added.', { exact: true }).waitFor()
