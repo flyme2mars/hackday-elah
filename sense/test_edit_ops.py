@@ -559,6 +559,87 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ops[1], {"op": "remove", "clip_id": ops[0]["left_id"]})
         self.assertNotIn("right_id", ops[0])
 
+    async def test_split_into_two_and_delete_the_right_part(self):
+        command = "split it into two and delete the right part"
+        batches = (
+            ([{"op": "divide", "clip_id": "c1", "at_s": 2}], 2.0),
+            ([{"op": "split", "clip_id": "other", "at_s": 2}], 2.0),
+            ([{}], 3.0),
+            ([{"op": "frobnicate", "clip_id": "c1"}], 3.0),
+        )
+        for raw, at_s in batches:
+            with self.subTest(raw=raw):
+                result = await _run_edit(command, raw, playhead_s=3)
+                self.assertNotIn("Unknown op", result["note"])
+                self.assertEqual([op["op"] for op in result["ops"]], ["split", "remove"])
+                _assert_right_cut(self, result, at_s)
+
+        variants = (
+            ("split here and delete the right", [{"op": "divide", "clip_id": "c1", "at_s": 9}], 3.0),
+            ("split in half and keep the left", [{"op": "split_in_half", "clip_id": "c1", "at_s": 2}], 2.0),
+            ("cut into 2 and remove the right half", [{"op": "bisect", "clip_id": "c1", "at_s": 2}], 2.0),
+            ("chop here and trash everything after", [{"op": "chop", "clip_id": "c1"}], 3.0),
+            ("chop here and trash everything after", [{}], 3.0),
+        )
+        for command, raw, at_s in variants:
+            with self.subTest(command=command, raw=raw):
+                result = await _run_edit(command, raw, playhead_s=3)
+                self.assertNotIn("Unknown op", result["note"])
+                self.assertEqual([op["op"] for op in result["ops"]], ["split", "remove"])
+                _assert_right_cut(self, result, at_s)
+
+        left = validate_ops(
+            [{"op": "halve", "clip_id": "other", "at_s": 4}],
+            set(),
+            timeline(),
+            "split and delete the left",
+            selected=["c1"],
+        )
+        self.assertEqual(left[0]["op"], "split")
+        self.assertEqual(left[0]["clip_id"], "c1")
+        self.assertEqual(left[0]["at_s"], 4.0)
+        self.assertEqual(left[1], {"op": "remove", "clip_id": left[0]["left_id"]})
+        self.assertNotIn("right_id", left[0])
+
+        for invented in ("divide", "bisect", "split_into_two", "split_in_half", "halve", "chop", "cut_right"):
+            with self.subTest(invented=invented):
+                aliased = validate_ops(
+                    [{"op": invented, "clip_id": "c1", "at_s": 2}],
+                    set(),
+                    timeline(),
+                    "split this clip",
+                )
+                self.assertEqual(aliased, [{"op": "split", "clip_id": "c1", "at_s": 2.0}])
+
+        kept = validate_ops(
+            [{"op": "remove", "clip_id": "c1"}],
+            set(),
+            timeline(),
+            "delete the right part",
+            playhead_s=3,
+            selected=["c1"],
+        )
+        self.assertEqual(kept, [{"op": "remove", "clip_id": "c1"}])
+        parked = validate_ops(
+            [{"op": "set_transform", "clip_id": "c1", "x": 0.8}],
+            set(),
+            timeline(),
+            "drop it on the right",
+        )
+        self.assertEqual(parked, [{"op": "set_transform", "clip_id": "c1", "x": 0.8}])
+
+        for phrase in (
+            "split here and delete the right",
+            "split it into two and delete the right part",
+            "split in half and keep the left",
+            "cut into 2 and remove the right half",
+            "chop here and trash everything after",
+            "split_into_two",
+            "bisect",
+            "cut_right",
+        ):
+            self.assertIn(phrase, INSTRUCTIONS)
+
 
 
 def _spinning_timeline():
@@ -602,6 +683,22 @@ def _planner(planner):
         return planner
 
     return choose
+
+
+async def _run_edit(command, raw, playhead_s=None):
+    async def planner(contents, messages, ops=raw):
+        return [Call("apply_ops", {"ops": ops})], contents, messages
+
+    body = {
+        "command": command,
+        "timeline": timeline(),
+        "library": [],
+        "selected_clip_ids": ["c1"],
+    }
+    if playhead_s is not None:
+        body["playhead_s"] = playhead_s
+    with patch("sense.planner._choose_planner", _planner(planner)):
+        return await run_command(beach_catalog(), body)
 
 
 if __name__ == "__main__":
