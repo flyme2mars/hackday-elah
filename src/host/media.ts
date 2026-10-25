@@ -1,4 +1,5 @@
-import { importBlob, importFiles, importUrl, MEDIA_DRAG_MIME, mediaDragKindMime, type MediaAsset } from '@elah/editor'
+import { importBlob, importFiles, importUrl, MEDIA_DRAG_MIME, mediaDragKindMime, type MediaAsset, type TimelineEngine } from '@elah/editor'
+import { droppedLibraryAsset, type PendingDrop, type TimelineClipRef } from './dropPlace.ts'
 import { getLibraryAsset, registerAssets, type LibraryAsset, type LibraryKind } from './library.ts'
 
 const elahIds = new Map<string, string>()
@@ -90,9 +91,32 @@ function isLibraryKind(kind: string): kind is LibraryKind {
   return kind === 'video' || kind === 'audio' || kind === 'image'
 }
 
-export function writeMediaDrag(data: DataTransfer, asset: LibraryAsset, assetId: string): void {
+const pendingDrops = new Map<string, PendingDrop>()
+
+export function beginMediaDrag(
+  data: DataTransfer,
+  asset: LibraryAsset,
+  assetId: string,
+  engine: TimelineEngine,
+): void {
+  pendingDrops.set(assetId, { asset, clipIds: new Set(timelineClipRefs(engine).map((clip) => clip.id)) })
   const payload = JSON.stringify({ kind: 'media-asset', assetId })
   data.setData(MEDIA_DRAG_MIME, payload)
   data.setData(mediaDragKindMime(asset.kind), '')
   data.effectAllowed = 'copy'
+}
+
+export function finishMediaDrag(assetId: string, engine: TimelineEngine): LibraryAsset | null {
+  const pending = pendingDrops.get(assetId)
+  pendingDrops.delete(assetId)
+  if (!pending) return null
+  return droppedLibraryAsset(pending, assetId, timelineClipRefs(engine))
+}
+
+function timelineClipRefs(engine: TimelineEngine): TimelineClipRef[] {
+  const refs: TimelineClipRef[] = []
+  for (const clips of Object.values(engine.getProject().clips)) {
+    for (const clip of clips) refs.push({ id: clip.id, assetId: clip.assetId ?? null })
+  }
+  return refs
 }
