@@ -1,4 +1,4 @@
-import { memo, useRef } from 'react'
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Plus,
   Film,
@@ -13,6 +13,9 @@ const KINDS: { kind: LibraryKind; label: string }[] = [
   { kind: 'audio', label: 'Audio' },
   { kind: 'image', label: 'Image' },
 ]
+
+/** One row past the scrollport, so the next cards are ready without loading the list. */
+const NEAR_ROOT_MARGIN = '120px 0px'
 
 interface MediaPanelProps {
   library: readonly LibraryAsset[]
@@ -67,52 +70,153 @@ export default memo(function MediaPanel({
         />
       </div>
       <div className="media-body">
-        <section className="media-library" aria-label="Library">
-          <h2>
-            Library <span>All assets</span>
-          </h2>
-          {library.length === 0 && (
-            <div className="media-empty">
-              <FolderOpen size={25} strokeWidth={1} />
-              <p>Your library is empty</p>
-              <span>Import video, audio or images.</span>
-            </div>
-          )}
-          <KindSections
-            items={library}
+        <ScrollingAssets
+          className="media-library"
+          label="Library"
+          heading={
+            <h2>
+              Library <span>All assets</span>
+            </h2>
+          }
+          items={library}
+          empty={
+            library.length === 0 ? (
+              <div className="media-empty">
+                <FolderOpen size={25} strokeWidth={1} />
+                <p>Your library is empty</p>
+                <span>Import video, audio or images.</span>
+              </div>
+            ) : null
+          }
+          readyIds={readyIds}
+          onPlace={onPlace}
+          onPrepare={onPrepare}
+          onDragAsset={onDragAsset}
+          onDragAssetEnd={onDragAssetEnd}
+        />
+        {results !== null && (
+          <ScrollingAssets
+            className="media-search"
+            label="Search"
+            heading={
+              <h2>
+                Search <span>{hits?.length ?? 0} results</span>
+              </h2>
+            }
+            items={hits ?? []}
+            empty={hits ? null : <p className="quiet">No matches in the library.</p>}
             readyIds={readyIds}
             onPlace={onPlace}
             onPrepare={onPrepare}
             onDragAsset={onDragAsset}
             onDragAssetEnd={onDragAssetEnd}
           />
-        </section>
-        {results !== null && (
-          <section className="media-search" aria-label="Search">
-            <h2>
-              Search <span>{hits?.length ?? 0} results</span>
-            </h2>
-            {hits ? (
-              <KindSections
-                items={hits}
-                readyIds={readyIds}
-                onPlace={onPlace}
-                onPrepare={onPrepare}
-                onDragAsset={onDragAsset}
-                onDragAssetEnd={onDragAssetEnd}
-              />
-            ) : (
-              <p className="quiet">No matches in the library.</p>
-            )}
-          </section>
         )}
       </div>
     </aside>
   )
 })
 
+function ScrollingAssets({
+  className,
+  label,
+  heading,
+  items,
+  empty,
+  readyIds,
+  onPlace,
+  onPrepare,
+  onDragAsset,
+  onDragAssetEnd,
+}: {
+  className: string
+  label: string
+  heading: ReactNode
+  items: readonly LibraryAsset[]
+  empty: ReactNode
+  readyIds: ReadonlyMap<string, string>
+  onPlace: (asset: LibraryAsset) => void
+  onPrepare: (asset: LibraryAsset) => void
+  onDragAsset: (data: DataTransfer, asset: LibraryAsset, assetId: string) => void
+  onDragAssetEnd: (assetId: string) => void
+}) {
+  const { rootRef, nearIds, watch } = useVisibleCards()
+  return (
+    <section ref={rootRef} className={className} aria-label={label}>
+      {heading}
+      {empty}
+      <KindSections
+        items={items}
+        nearIds={nearIds}
+        watch={watch}
+        readyIds={readyIds}
+        onPlace={onPlace}
+        onPrepare={onPrepare}
+        onDragAsset={onDragAsset}
+        onDragAssetEnd={onDragAssetEnd}
+      />
+    </section>
+  )
+}
+
+function useVisibleCards() {
+  const rootRef = useRef<HTMLElement>(null)
+  const nodesRef = useRef(new Map<string, HTMLElement>())
+  const observerRef = useRef<IntersectionObserver | null>(null)
+  const [nearIds, setNearIds] = useState<ReadonlySet<string>>(() => new Set())
+
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root || typeof IntersectionObserver === 'undefined') return
+    const observer = new IntersectionObserver(
+      (entries) => {
+        setNearIds((current) => {
+          const next = new Set(current)
+          let changed = false
+          for (const entry of entries) {
+            const id = entry.target.getAttribute('data-vault-id')
+            if (!id) continue
+            if (entry.isIntersecting) {
+              if (!next.has(id)) {
+                next.add(id)
+                changed = true
+              }
+            } else if (next.delete(id)) {
+              changed = true
+            }
+          }
+          return changed ? next : current
+        })
+      },
+      { root, rootMargin: NEAR_ROOT_MARGIN },
+    )
+    observerRef.current = observer
+    for (const node of nodesRef.current.values()) observer.observe(node)
+    return () => {
+      observer.disconnect()
+      observerRef.current = null
+    }
+  }, [])
+
+  const watch = useCallback((vaultId: string, node: HTMLElement) => {
+    const previous = nodesRef.current.get(vaultId)
+    if (previous && previous !== node) observerRef.current?.unobserve(previous)
+    nodesRef.current.set(vaultId, node)
+    node.setAttribute('data-vault-id', vaultId)
+    observerRef.current?.observe(node)
+    return () => {
+      if (nodesRef.current.get(vaultId) === node) nodesRef.current.delete(vaultId)
+      observerRef.current?.unobserve(node)
+    }
+  }, [])
+
+  return { rootRef, nearIds, watch }
+}
+
 function KindSections({
   items,
+  nearIds,
+  watch,
   readyIds,
   onPlace,
   onPrepare,
@@ -120,6 +224,8 @@ function KindSections({
   onDragAssetEnd,
 }: {
   items: readonly LibraryAsset[]
+  nearIds: ReadonlySet<string>
+  watch: (vaultId: string, node: HTMLElement) => () => void
   readyIds: ReadonlyMap<string, string>
   onPlace: (asset: LibraryAsset) => void
   onPrepare: (asset: LibraryAsset) => void
@@ -146,38 +252,17 @@ function KindSections({
             </h3>
             <div className="kind-row">
               {visible.map((item) => (
-                <button
+                <HitCard
                   key={item.vaultId}
-                  type="button"
-                  className="hit"
-                  draggable={readyIds.has(item.vaultId)}
-                  onPointerDown={() => onPrepare(item)}
-                  onClick={() => onPlace(item)}
-                  onDragStart={(event) => {
-                    const assetId = readyIds.get(item.vaultId)
-                    if (!assetId) {
-                      event.preventDefault()
-                      return
-                    }
-                    onDragAsset(event.dataTransfer, item, assetId)
-                  }}
-                  onDragEnd={() => {
-                    const assetId = readyIds.get(item.vaultId)
-                    if (assetId) onDragAssetEnd(assetId)
-                  }}
-                >
-                  <Thumb item={item} />
-                  <span className="hit-copy">
-                    <span className="hit-name" title={item.name}>
-                      {item.name}
-                    </span>
-                    {item.durationSec !== null && (
-                      <span className="hit-meta">
-                        {formatDuration(item.durationSec)}
-                      </span>
-                    )}
-                  </span>
-                </button>
+                  item={item}
+                  near={nearIds.has(item.vaultId)}
+                  watch={watch}
+                  assetId={readyIds.get(item.vaultId)}
+                  onPlace={onPlace}
+                  onPrepare={onPrepare}
+                  onDragAsset={onDragAsset}
+                  onDragAssetEnd={onDragAssetEnd}
+                />
               ))}
             </div>
           </div>
@@ -187,7 +272,78 @@ function KindSections({
   )
 }
 
-function Thumb({ item }: { item: LibraryAsset }) {
+function HitCard({
+  item,
+  near,
+  watch,
+  assetId,
+  onPlace,
+  onPrepare,
+  onDragAsset,
+  onDragAssetEnd,
+}: {
+  item: LibraryAsset
+  near: boolean
+  watch: (vaultId: string, node: HTMLElement) => () => void
+  assetId: string | undefined
+  onPlace: (asset: LibraryAsset) => void
+  onPrepare: (asset: LibraryAsset) => void
+  onDragAsset: (data: DataTransfer, asset: LibraryAsset, assetId: string) => void
+  onDragAssetEnd: (assetId: string) => void
+}) {
+  const ref = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    const node = ref.current
+    if (!node) return
+    return watch(item.vaultId, node)
+  }, [item.vaultId, watch])
+  useEffect(() => {
+    if (near) onPrepare(item)
+  }, [near, item, onPrepare])
+
+  return (
+    <button
+      ref={ref}
+      type="button"
+      className="hit"
+      data-vault-id={item.vaultId}
+      draggable={assetId !== undefined}
+      onPointerDown={() => onPrepare(item)}
+      onFocus={() => onPrepare(item)}
+      onClick={() => onPlace(item)}
+      onDragStart={(event) => {
+        if (!assetId) {
+          event.preventDefault()
+          return
+        }
+        onDragAsset(event.dataTransfer, item, assetId)
+      }}
+      onDragEnd={() => {
+        if (assetId) onDragAssetEnd(assetId)
+      }}
+    >
+      <Thumb item={item} active={near} />
+      <span className="hit-copy">
+        <span className="hit-name" title={item.name}>
+          {item.name}
+        </span>
+        {item.durationSec !== null && (
+          <span className="hit-meta">{formatDuration(item.durationSec)}</span>
+        )}
+      </span>
+    </button>
+  )
+}
+
+function Thumb({ item, active }: { item: LibraryAsset; active: boolean }) {
+  if (item.kind === 'audio') {
+    return (
+      <span className="thumb thumb-audio" aria-hidden="true">
+        <AudioLines size={30} strokeWidth={1} />
+      </span>
+    )
+  }
+  if (!active) return <span className="thumb" aria-hidden="true" />
   if (item.thumb) {
     return (
       <span className="thumb">
@@ -211,16 +367,9 @@ function Thumb({ item }: { item: LibraryAsset }) {
       </span>
     )
   }
-  if (item.kind === 'image') {
-    return (
-      <span className="thumb">
-        <img src={item.src} alt="" />
-      </span>
-    )
-  }
   return (
-    <span className="thumb thumb-audio" aria-hidden="true">
-      <AudioLines size={30} strokeWidth={1} />
+    <span className="thumb">
+      <img src={item.src} alt="" />
     </span>
   )
 }

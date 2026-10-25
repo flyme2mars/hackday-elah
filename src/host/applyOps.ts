@@ -1,9 +1,9 @@
 import {
-  importUrl,
   type Clip,
   type TimelineEngine,
   type Transform,
 } from '@elah/editor'
+import { importLibraryMedia } from './media.ts'
 import { getLibraryAsset, vaultIdForSrc } from './library.ts'
 import { clearedMotionPatch, motionForSnapshot, type HostMotion } from './motion.ts'
 import { measureClipForRotation, setClipMotion, setClipTransform, wrapDegrees } from './rotate.ts'
@@ -154,7 +154,7 @@ async function resolveAssets(ops: readonly Op[]): Promise<Map<string, ResolvedAs
       throw new Error(`vault_id "${vaultId}" is an image. add_clip accepts video and audio.`)
     }
     try {
-      const asset = await importUrl(spec.src, { name: spec.name, kind: spec.kind })
+      const asset = await importLibraryMedia(spec)
       if (!Number.isFinite(asset.durationSec) || asset.durationSec <= 0) {
         throw new MediaUnavailableError(`Imported ${spec.name} but the browser reported no duration.`)
       }
