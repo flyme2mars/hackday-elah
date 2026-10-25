@@ -12,7 +12,7 @@
 
 A monochrome browser video editor where a **single agent command field** (not a chat) drives vault search, find-similar, and timeline edits. Preview + elah timeline sit on the right. Media library (Video / Audio / Image) sits on the left.
 
-Natural language like “trim this clip to 2 seconds” or “find clips like this beach shot” becomes tool calls. The planner prefers **cloud Gemma 4**, then falls back to **local Gemma E4B** on the Mac so the demo never dies on rate limits.
+Natural language like “trim this clip to 2 seconds” or “find clips like this beach shot” becomes tool calls. The planner prefers **DigitalOcean Gemma 4**, then Gemini, then Vertex, then **local Gemma E4B** on the Mac so the demo never dies on rate limits.
 
 ### Product rules (do not break)
 
@@ -22,7 +22,7 @@ Natural language like “trim this clip to 2 seconds” or “find clips like th
 - Timeline right-click → Find similar.
 - No demo copy, no track legends like “V1 and V2 picture · A1 sound · T1 titles”.
 - No Malayalam / Kerala / personal-themed angles for the pitch. Aim for the coolest general product.
-- Showcase Gemma (Gemini API / Vertex / local E4B). Do not short-circuit the planner to a hardcoded local-only path for demos.
+- Showcase Gemma (DigitalOcean / Gemini API / Vertex / local E4B). Do not short-circuit the planner to a hardcoded local-only path for demos.
 
 ---
 
@@ -35,9 +35,10 @@ Browser (Vite + React + @elah/editor)     :43123
         ▼
 sense (FastAPI worker)                   :8765
         │
-        ├─► Gemini API  gemma-4-26b-a4b-it     (primary planner, API key)
-        ├─► Vertex AI   gemma-4-26b-a4b-it-maas (fallback, ADC)
-        └─► local E4B   via MLX HTTP           (last resort)
+        ├─► DigitalOcean gemma-4-31B-it         (primary when DO_MODEL_KEY is set)
+        ├─► Gemini API   gemma-4-26b-a4b-it     (API key)
+        ├─► Vertex AI    gemma-4-26b-a4b-it-maas (ADC)
+        └─► local E4B    via MLX HTTP           (last resort)
                 │
                 ▼
         MLX worker (hackday-mlx)               :8787
@@ -50,9 +51,10 @@ Vault: ~/HackDayVault  (indexed clips + embeddings on disk)
 
 ### Planner order
 
-1. **Gemini API** (`GEMINI_API_KEY` / `GOOGLE_API_KEY` / `SENSE_GEMINI_API_KEY`) → model `gemma-4-26b-a4b-it`
-2. On Gemini **402 / 429 / 503** → **Vertex** MaaS `gemma-4-26b-a4b-it-maas`
-3. On Vertex **429 / 503** (or no ADC) → **local E4B** at `SENSE_E4B_URL` (default `http://127.0.0.1:8787/v1/chat/completions`)
+1. **DigitalOcean Inference** (`DO_MODEL_KEY`) → model `gemma-4-31B-it` at `SENSE_DO_URL` (default `https://inference.do-ai.run/v1/chat/completions`). OpenAI-compatible chat completions. Planner id: `do`. `SENSE_DO=0` skips it.
+2. **Gemini API** when DigitalOcean is unset, or after DigitalOcean **401 / 402 / 403 / 429 / 503** (`GEMINI_API_KEY` / `GOOGLE_API_KEY` / `SENSE_GEMINI_API_KEY`) → model `gemma-4-26b-a4b-it`
+3. On Gemini **402 / 429 / 503** → **Vertex** MaaS `gemma-4-26b-a4b-it-maas`
+4. On Vertex **429 / 503** (or no ADC) → **local E4B** at `SENSE_E4B_URL` (default `http://127.0.0.1:8787/v1/chat/completions`)
 
 Timeline edits return as `ops` and are applied in the browser via `applyOps` into elah’s `TimelineEngine` (one undo step).
 
@@ -78,6 +80,7 @@ Timeline edits return as `ops` and are applied in the browser via `applyOps` int
 | `public/samples/` | Fallback Flower / Bunny / Bed when vault empty |
 | `.env.example` | Documented env vars (no secrets committed) |
 | `.gemini.env` | **Local only, gitignored.** Never commit. |
+| `.do.env` | **Local only, gitignored.** `DO_MODEL_KEY`. Never commit. |
 
 Related Mac dirs **outside** this repo:
 
@@ -110,7 +113,8 @@ Related Mac dirs **outside** this repo:
 
 | Service | Use | Notes |
 | --- | --- | --- |
-| **Google AI Studio (Gemini API)** | Primary Gemma 4 planner | Needs a key in `.gemini.env`. Project `hackathon1` / `hackathon1-512618`. **402 prepaid depleted** until “Set up prepay” is done. Do **not** spend real money without Akshai OK. |
+| **DigitalOcean Inference** | First Gemma 4 planner when `DO_MODEL_KEY` is set | Serverless `gemma-4-31B-it`. Key in `.do.env`. **401 / 402 / 403 / 429 / 503** fall through. Do **not** spend real money without Akshai OK. |
+| **Google AI Studio (Gemini API)** | Next Gemma 4 planner | Needs a key in `.gemini.env`. Project `hackathon1` / `hackathon1-512618`. **402 prepaid depleted** until “Set up prepay” is done. Do **not** spend real money without Akshai OK. |
 | **Vertex AI MaaS** | Gemma 4 fallback | PayGo / shared capacity. **429 ≠ out of credits**; it is shared pool busy. ADC required. |
 | **GCP credits** | Can cover Vertex / related cloud | Akshai has monthly GCP credits. Still ask before any new paid setup (AI Studio Prepay). |
 | **GitHub** | Source of truth for Codex + cloud agent | `https://github.com/flyme2mars/hackday-elah` |
@@ -119,7 +123,8 @@ Related Mac dirs **outside** this repo:
 
 | Model | Where | Role |
 | --- | --- | --- |
-| `gemma-4-26b-a4b-it` | Gemini API | Primary planner |
+| `gemma-4-31B-it` | DigitalOcean Inference | First planner when `DO_MODEL_KEY` is set |
+| `gemma-4-26b-a4b-it` | Gemini API | Next planner |
 | `gemma-4-26b-a4b-it-maas` | Vertex | Planner fallback |
 | `unsloth/gemma-4-E4B-it-UD-MLX-4bit` (local) | MLX :8787 | Last-resort planner |
 | `mlx-community/embeddinggemma-2-8bit` | MLX | Search / similar embeddings |
@@ -149,7 +154,8 @@ cd ~/code/projects/hackday-elah
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r sense/requirements.txt
 
-# optional Gemini primary
+# optional cloud planners (both files are gitignored)
+set -a && source .do.env && set +a       # contains DO_MODEL_KEY
 set -a && source .gemini.env && set +a   # contains GEMINI_API_KEY
 
 export SENSE_VAULT="$HOME/HackDayVault"
@@ -172,9 +178,11 @@ MLX (separate terminal, from `~/code/hackday-mlx`): start the phase-swap server 
 
 Useful toggles:
 
+- `SENSE_DO=0` — skip DigitalOcean Inference  
 - `SENSE_GEMINI=0` — skip Gemini API  
 - `SENSE_VERTEX=0` — skip Vertex  
 - `GOOGLE_APPLICATION_CREDENTIALS` — if ADC is not in the default gcloud path  
+- `SENSE_DO_URL` / `SENSE_DO_MODEL` — DigitalOcean chat completions endpoint and model id  
 
 ---
 
@@ -183,13 +191,14 @@ Useful toggles:
 1. Start **MLX** on `:8787` (`~/code/hackday-mlx`).
 2. Start **sense** on `:8765` (this repo).
 3. Start **Vite** on `:43123` (`npm run dev`).
-4. Check `GET http://127.0.0.1:8765/health` (`gemini_configured`, Vertex/ADC, mlx, vault, npz).
+4. Check `GET http://127.0.0.1:8765/health` (`do_configured`, `do_model`, `gemini_configured`, Vertex/ADC, mlx, vault, npz). The payload never includes API keys.
 5. Open `http://127.0.0.1:43123`. Place vault clips, try a command, try Find similar, try Export.
 
 ---
 
 ## 7. Known constraints (day-of)
 
+- **DigitalOcean 401 / 402 / 429 / 503:** Auth, billing, or capacity. Fall through to Gemini, then Vertex, then E4B. Ask Akshai before any new charge.
 - **Gemini API 402:** AI Studio project still needs “Set up prepay”. Postpay alone does not fund `generateContent`. GCP credit ≠ AI Studio Prepay wallet until Prepay is set up. Ask Akshai before any charge.
 - **Vertex 429:** Shared MaaS capacity, not empty billing. Fall through to E4B is expected.
 - **Upload find-similar:** `upload/*` is blob-only; EmbeddingGemma path needs vault / disk ids.
@@ -234,7 +243,7 @@ Issue template for Codex should include: GOAL, SCOPE (paths), ACCEPTANCE, FORBID
 ## 9. Demo acceptance (win bar)
 
 - [ ] Three processes up: MLX, sense, Vite.
-- [ ] Health shows planner path (Gemini and/or Vertex and/or E4B) without inventing ops when all are down.
+- [ ] Health shows planner path (DigitalOcean and/or Gemini and/or Vertex and/or E4B) without inventing ops when all are down.
 - [ ] Command field: search vault + apply at least trim / place / remove style edits.
 - [ ] Find similar works on vault clips.
 - [ ] Free-angle rotate works from ClipMenu.

@@ -10,9 +10,10 @@ Browser (Vite + React + @elah/editor)     :43123
         ▼
 sense (FastAPI, sense/app.py)             :8765
         │
-        ├─► Gemini API  gemma-4-26b-a4b-it      primary planner
-        ├─► Vertex AI   gemma-4-26b-a4b-it-maas fallback
-        └─► local E4B   MLX HTTP                last resort
+        ├─► DigitalOcean  gemma-4-31B-it         first (when DO_MODEL_KEY is set)
+        ├─► Gemini API    gemma-4-26b-a4b-it     next
+        ├─► Vertex AI     gemma-4-26b-a4b-it-maas fallback
+        └─► local E4B     MLX HTTP               last resort
                 │
                 ▼
         MLX worker (not this repo)             :8787
@@ -42,14 +43,17 @@ Do not reorder this and do not short-circuit it to local-only.
 
 `_choose_planner` in `sense/planner.py`:
 
-1. **Gemini API** when `SENSE_GEMINI` is not `0` and a key is set (`GEMINI_API_KEY`, `GOOGLE_API_KEY`, or `SENSE_GEMINI_API_KEY`). Model `GEMINI_MODEL`, default `gemma-4-26b-a4b-it`. Endpoint `generativelanguage.googleapis.com` `generateContent`. The key is a header, not a query param.
-2. **Vertex MaaS** when Gemini is skipped, or Gemini returns **402 / 429 / 503**. Needs Application Default Credentials and `SENSE_VERTEX` not `0`. Model `VERTEX_MODEL`, default `gemma-4-26b-a4b-it-maas`. Project `GOOGLE_CLOUD_PROJECT` (default `hackathon1-512618`), location `VERTEX_LOCATION` (default `global`).
-3. **Local E4B** when Vertex returns **429 / 503**, or Gemini and Vertex are both skipped, and `GET {SENSE_MLX_URL}/health` answers. Chat URL `SENSE_E4B_URL`, default `http://127.0.0.1:8787/v1/chat/completions`.
-4. Otherwise `planner` is `"offline"` and `ops` is `[]`. The host does not invent edits. The command status line says the planner is not loaded.
+1. **DigitalOcean Inference** when `SENSE_DO` is not `0` and `DO_MODEL_KEY` is set. Model `SENSE_DO_MODEL`, default `gemma-4-31B-it`. OpenAI chat completions at `SENSE_DO_URL`, default `https://inference.do-ai.run/v1/chat/completions`. Planner id: `do`. HTTP **401 / 402 / 403 / 429 / 503** fall through.
+2. **Gemini API** when `SENSE_GEMINI` is not `0` and a key is set (`GEMINI_API_KEY`, `GOOGLE_API_KEY`, or `SENSE_GEMINI_API_KEY`). Model `GEMINI_MODEL`, default `gemma-4-26b-a4b-it`. Endpoint `generativelanguage.googleapis.com` `generateContent`. The key is a header, not a query param. Planner id: `gemini`.
+3. **Vertex MaaS** when Gemini is skipped, or Gemini returns **402 / 429 / 503**. Needs Application Default Credentials and `SENSE_VERTEX` not `0`. Model `VERTEX_MODEL`, default `gemma-4-26b-a4b-it-maas`. Project `GOOGLE_CLOUD_PROJECT` (default `hackathon1-512618`), location `VERTEX_LOCATION` (default `global`). Planner id: `vertex`.
+4. **Local E4B** when Vertex returns **429 / 503**, or earlier hops are skipped, and `GET {SENSE_MLX_URL}/health` answers. Chat URL `SENSE_E4B_URL`, default `http://127.0.0.1:8787/v1/chat/completions`. Planner id: `e4b`.
+5. Otherwise `planner` is `"offline"` and `ops` is `[]`. The host does not invent edits. The command status line says the planner is not loaded.
 
-Busy handoff notes are already in the worker (`Gemini API busy; trying Vertex.`, `Vertex busy; using local E4B.`). Leave that copy in place.
+Without `DO_MODEL_KEY`, the order stays Gemini → Vertex → E4B.
 
-`GET /health` reports `gemini_configured`, `gemini_model`, `vertex_credentials`, `vertex_project`, `vertex_model`, `mlx_url`, `e4b_url`, `vault`, `vault_present`, `embeddings` (`index` / `mismatch` / `offline`), `npz_keys`, `npz_error`. It does not return the API key.
+Busy handoff notes are already in the worker (`DigitalOcean busy; trying Gemini.`, `Gemini API busy; trying Vertex.`, `Vertex busy; using local E4B.`). Leave that copy in place.
+
+`GET /health` reports `do_configured`, `do_model`, `gemini_configured`, `gemini_model`, `vertex_credentials`, `vertex_project`, `vertex_model`, `mlx_url`, `e4b_url`, `vault`, `vault_present`, `embeddings` (`index` / `mismatch` / `offline`), `npz_keys`, `npz_error`. It does not return API keys.
 
 ## Ops contract
 
@@ -89,7 +93,7 @@ Find similar is the timeline context menu, then `POST /similar` with `vault_id`.
 
 ## Secrets
 
-`.gemini.env` is gitignored (`.gemini.env` and `*.env`, with `!.env.example`). Never commit API keys, ADC JSON, vault media, or `.gemini.env`. Names live in `.env.example`.
+`.do.env` and `.gemini.env` are gitignored (those files and `*.env`, with `!.env.example`). Never commit API keys, ADC JSON, vault media, or those env files. Names live in `.env.example`.
 
 ## Run
 
@@ -99,7 +103,8 @@ Find similar is the timeline context menu, then `POST /similar` with `vault_id`.
 # 2. sense on :8765, from this repo
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r sense/requirements.txt
-set -a && source .gemini.env && set +a   # optional
+set -a && source .do.env && set +a       # DigitalOcean first
+set -a && source .gemini.env && set +a   # optional Gemini
 export SENSE_VAULT="$HOME/HackDayVault"
 export SENSE_MLX_URL="http://127.0.0.1:8787"
 export GOOGLE_CLOUD_PROJECT="hackathon1-512618"
@@ -114,7 +119,7 @@ npm run dev
 
 Health: `curl -s http://127.0.0.1:8765/health`. Open `http://127.0.0.1:43123`.
 
-Vertex ADC: `gcloud auth application-default login`. `SENSE_GEMINI=0` skips Gemini. `SENSE_VERTEX=0` skips Vertex.
+Vertex ADC: `gcloud auth application-default login`. `SENSE_DO=0` skips DigitalOcean. `SENSE_GEMINI=0` skips Gemini. `SENSE_VERTEX=0` skips Vertex.
 
 ## Verify
 

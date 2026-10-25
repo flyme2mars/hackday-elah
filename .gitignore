@@ -30,5 +30,6 @@ sense/.cache/
 
 # Secrets
 .gemini.env
+.do.env
 *.env
 !.env.example

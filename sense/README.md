@@ -1,6 +1,6 @@
 # Sense
 
-Local FastAPI worker for the editor. It searches the vault, pulls a frame, asks Parakeet for a transcript, and runs one tool loop. The planner tries the Gemini API, then Vertex MaaS, then local Gemma E4B. The browser never holds cloud credentials.
+Local FastAPI worker for the editor. It searches the vault, pulls a frame, asks Parakeet for a transcript, and runs one tool loop against DigitalOcean, Gemini, Vertex, or a local Gemma. The browser never holds cloud credentials.
 
 Default bind: `127.0.0.1:8765`. Vite proxies `/api` to that port.
 
@@ -11,7 +11,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r sense/requirements.txt
 
-# Optional Gemini primary. .gemini.env is gitignored.
+# Optional DigitalOcean first, then Gemini. Both env files are gitignored.
+set -a && source .do.env && set +a
 set -a && source .gemini.env && set +a
 
 export SENSE_VAULT="$HOME/HackDayVault"
@@ -44,6 +45,8 @@ The credential file is `~/.config/gcloud/application_default_credentials.json`. 
 
 The worker does not load EmbeddingGemma, Parakeet, or Gemma E4B itself. It calls `~/code/hackday-mlx` over HTTP, one request at a time, so that worker can phase-swap a single model.
 
+Planner order when each hop is configured: DigitalOcean Inference (`DO_MODEL_KEY`, model `SENSE_DO_MODEL`, default `gemma-4-31B-it`) → Gemini API → Vertex MaaS → local E4B. DigitalOcean uses OpenAI chat completions at `SENSE_DO_URL` (default `https://inference.do-ai.run/v1/chat/completions`) with the same tool list. `SENSE_DO=0` skips it. HTTP 401, 402, 403, 429, and 503 fall through. `GET /health` includes `do_configured` and `do_model` and never returns the key. Put `DO_MODEL_KEY` in gitignored `.do.env`.
+
 | Env | Default | Body |
 | --- | --- | --- |
 | `SENSE_MLX_EMBED_URL` | `$SENSE_MLX_URL/v1/embeddings` | `{"model":"embeddinggemma","input":"text"}` |
@@ -53,7 +56,7 @@ The worker does not load EmbeddingGemma, Parakeet, or Gemma E4B itself. It calls
 
 Embedding responses may be `{"data":[{"embedding":[...]}]}` or `{"embedding":[...]}`. Transcription responses may be `{"text":"..."}` or `{"transcript":"..."}`.
 
-If those routes differ in the MLX repo, point the env vars at the real ones. A missing route is reported as the model not loaded. Search then matches names and says so. The planner does not invent timeline ops when Gemini, Vertex, and the local model are all down.
+If those routes differ in the MLX repo, point the env vars at the real ones. A missing route is reported as the model not loaded. Search then matches names and says so. The planner does not invent timeline ops when DigitalOcean, Gemini, Vertex, and the local model are all down.
 
 `GET /health` includes `npz_keys` and `npz_error` when a `vault_index_*.npz` file is present but the arrays are not `ids` plus `embeddings` (also accepted: `vault_ids`, `names`, `vectors`, `emb`, `X`).
 

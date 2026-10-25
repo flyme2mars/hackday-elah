@@ -15,6 +15,7 @@ from sense.planner import (
     INSTRUCTIONS,
     VertexBusy,
     _choose_planner,
+    _do_turn,
     _e4b_turn,
     _gemini_turn,
     _parse_e4b_tool_calls,
@@ -254,6 +255,10 @@ def _blank_cloud_env(**extra: str) -> dict[str, str]:
         "SENSE_GEMINI": "1",
         "SENSE_VERTEX": "1",
         "GEMINI_MODEL": "",
+        "DO_MODEL_KEY": "",
+        "SENSE_DO": "1",
+        "SENSE_DO_URL": "",
+        "SENSE_DO_MODEL": "",
     }
     base.update(extra)
     return base
@@ -343,6 +348,20 @@ class GeminiTest(unittest.IsolatedAsyncioTestCase):
 
         async def mlx_down() -> bool:
             return False
+
+        with (
+            patch.dict(os.environ, _blank_cloud_env(DO_MODEL_KEY="do-key", GEMINI_API_KEY="studio-key")),
+            patch("sense.planner._vertex_enabled", return_value=True),
+            patch("sense.planner._mlx_up", mlx_up),
+        ):
+            self.assertIs(await _choose_planner(), _do_turn)
+
+        with (
+            patch.dict(os.environ, _blank_cloud_env(DO_MODEL_KEY="do-key", GEMINI_API_KEY="studio-key", SENSE_DO="0")),
+            patch("sense.planner._vertex_enabled", return_value=True),
+            patch("sense.planner._mlx_up", mlx_up),
+        ):
+            self.assertIs(await _choose_planner(), _gemini_turn)
 
         with (
             patch.dict(os.environ, _blank_cloud_env(GEMINI_API_KEY="studio-key")),
@@ -467,6 +486,230 @@ class GeminiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(via_e4b["planner"], "e4b")
         self.assertIn("Gemini API busy; using local E4B.", via_e4b["note"])
         self.assertNotIn("Embedding model is not loaded", via_e4b["note"])
+        self.assertEqual(via_e4b["ops"][0]["op"], "trim")
+
+
+def _do_tool_message() -> dict:
+    return {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_do",
+                            "type": "function",
+                            "function": {
+                                "name": "apply_ops",
+                                "arguments": json.dumps(
+                                    {
+                                        "label": "Trim to 2s",
+                                        "ops": [{"op": "trim", "clip_id": "c1", "duration_s": 2}],
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+
+
+class _DoClient:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+    async def __aenter__(self) -> _DoClient:
+        return self
+
+    async def __aexit__(self, *args: object) -> bool:
+        del args
+        return False
+
+    async def post(self, url: str, **kwargs: object) -> _Response:
+        headers = kwargs.get("headers")
+        header_map = headers if isinstance(headers, dict) else {}
+        body = kwargs.get("json")
+        _DoClient.seen.append((url, header_map, body))
+        status = _DoClient.status
+        if status >= 400:
+            return _Response(status, {})
+        return _Response(status, _do_tool_message())
+
+
+_DoClient.seen = []  # type: ignore[attr-defined]
+_DoClient.status = 200  # type: ignore[attr-defined]
+
+
+class _DoBusyThenGemini(_GeminiOk):
+    async def post(self, url: str, **kwargs: object) -> _Response:
+        if "inference.do-ai.run" in url:
+            return _Response(429, {})
+        return await super().post(url, **kwargs)
+
+
+class _DoBusyThenVertex(_GeminiRoute):
+    async def post(self, url: str, **kwargs: object) -> _Response:
+        if "inference.do-ai.run" in url:
+            return _Response(402, {})
+        return await super().post(url, **kwargs)
+
+
+class _DoBusyThenE4B(_Client):
+    async def post(self, url: str, **kwargs: object) -> _Response:
+        if "inference.do-ai.run" in url:
+            return _Response(503, {})
+        return await super().post(url, **kwargs)
+
+
+class DigitalOceanTest(unittest.IsolatedAsyncioTestCase):
+    def test_health_hides_the_key(self) -> None:
+        secret = "do-key-not-for-logs"
+        with patch.dict(os.environ, _blank_cloud_env(DO_MODEL_KEY=secret)):
+            body = health(catalog())
+        self.assertIs(body["do_configured"], True)
+        self.assertEqual(body["do_model"], "gemma-4-31B-it")
+        self.assertNotIn(secret, json.dumps(body))
+        with patch.dict(os.environ, _blank_cloud_env(DO_MODEL_KEY=secret, SENSE_DO="0")):
+            disabled = health(catalog())
+        self.assertIs(disabled["do_configured"], True)
+        self.assertNotIn(secret, json.dumps(disabled))
+        with patch.dict(os.environ, _blank_cloud_env()):
+            blank = health(catalog())
+        self.assertIs(blank["do_configured"], False)
+        self.assertEqual(blank["do_model"], "gemma-4-31B-it")
+
+    async def test_do_turn_posts_openai_chat_completions(self) -> None:
+        secret = "do-key"
+        _DoClient.seen = []
+        _DoClient.status = 200
+        with (
+            patch.dict(
+                os.environ,
+                _blank_cloud_env(DO_MODEL_KEY=secret, SENSE_DO_MODEL="gemma-4-31B-it"),
+            ),
+            patch("sense.planner.httpx.AsyncClient", _DoClient),
+        ):
+            calls, _contents, messages = await _do_turn([], [{"role": "user", "content": "trim"}])
+        self.assertEqual(calls[0].name, "apply_ops")
+        self.assertEqual(calls[0].args["ops"][0]["duration_s"], 2)
+        self.assertEqual(messages[-1]["tool_calls"][0]["id"], "call_do")
+        url, headers, body = _DoClient.seen[0]
+        self.assertEqual(url, "https://inference.do-ai.run/v1/chat/completions")
+        self.assertEqual(headers.get("Authorization"), f"Bearer {secret}")
+        self.assertNotIn(secret, url)
+        self.assertEqual(body["model"], "gemma-4-31B-it")
+        self.assertEqual(body["tool_choice"], "auto")
+        self.assertIn("apply_ops", [item["function"]["name"] for item in body["tools"]])
+        self.assertIn("search_vault", [item["function"]["name"] for item in body["tools"]])
+
+    async def test_do_turn_honors_url_override(self) -> None:
+        _DoClient.seen = []
+        _DoClient.status = 200
+        with (
+            patch.dict(
+                os.environ,
+                _blank_cloud_env(
+                    DO_MODEL_KEY="do-key",
+                    SENSE_DO_URL="https://inference.example/v1/chat/completions",
+                    SENSE_DO_MODEL="custom-gemma",
+                ),
+            ),
+            patch("sense.planner.httpx.AsyncClient", _DoClient),
+        ):
+            await _do_turn([], [{"role": "user", "content": "trim"}])
+        url, _headers, body = _DoClient.seen[0]
+        self.assertEqual(url, "https://inference.example/v1/chat/completions")
+        self.assertEqual(body["model"], "custom-gemma")
+
+    async def test_busy_and_auth_statuses_fall_through_without_the_key(self) -> None:
+        secret = "do-key-secret"
+        for status in (401, 402, 403, 429, 503):
+            _DoClient.status = status
+            with (
+                patch.dict(os.environ, _blank_cloud_env(DO_MODEL_KEY=secret)),
+                patch("sense.planner.httpx.AsyncClient", _DoClient),
+            ):
+                with self.assertRaises(VertexBusy) as caught:
+                    await _do_turn([], [])
+            self.assertEqual(str(caught.exception), f"DigitalOcean returned {status}.")
+            self.assertNotIn(secret, str(caught.exception))
+
+    async def test_other_http_errors_do_not_fall_through(self) -> None:
+        _DoClient.status = 400
+        with (
+            patch.dict(os.environ, _blank_cloud_env(DO_MODEL_KEY="do-key")),
+            patch("sense.planner.httpx.AsyncClient", _DoClient),
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                await _do_turn([], [])
+        self.assertNotIsInstance(caught.exception, VertexBusy)
+        self.assertIn("400", str(caught.exception))
+
+    async def test_run_command_uses_digitalocean(self) -> None:
+        async def use_do() -> object:
+            return _do_turn
+
+        _DoClient.seen = []
+        _DoClient.status = 200
+        with (
+            patch.dict(os.environ, _blank_cloud_env(DO_MODEL_KEY="do-key")),
+            patch("sense.planner._choose_planner", use_do),
+            patch("sense.planner.httpx.AsyncClient", _DoClient),
+        ):
+            result = await run_command(
+                catalog(),
+                {"command": "trim this video to 2 sec", "timeline": timeline(), "library": []},
+            )
+        self.assertEqual(result["planner"], "do")
+        self.assertEqual(result["ops"], [{"op": "trim", "clip_id": "c1", "duration_s": 2}])
+
+    async def test_do_busy_falls_through_gemini_vertex_e4b(self) -> None:
+        async def use_do() -> object:
+            return _do_turn
+
+        with (
+            patch.dict(os.environ, _blank_cloud_env(DO_MODEL_KEY="do-key", GEMINI_API_KEY="studio-key")),
+            patch("sense.planner._choose_planner", use_do),
+            patch("sense.planner._vertex_enabled", return_value=True),
+            patch("sense.planner.httpx.AsyncClient", _DoBusyThenGemini),
+        ):
+            via_gemini = await run_command(
+                catalog(),
+                {"command": "trim this video to 2 sec", "timeline": timeline(), "library": []},
+            )
+        self.assertEqual(via_gemini["planner"], "gemini")
+        self.assertIn("DigitalOcean busy; trying Gemini.", via_gemini["note"])
+        self.assertEqual(via_gemini["ops"][0]["op"], "trim")
+
+        with (
+            patch.dict(os.environ, _blank_cloud_env(DO_MODEL_KEY="do-key", SENSE_GEMINI="0")),
+            patch("sense.planner._choose_planner", use_do),
+            patch("sense.planner._vertex_enabled", return_value=True),
+            patch("sense.planner._vertex_token", return_value="token"),
+            patch("sense.planner.httpx.AsyncClient", _DoBusyThenVertex),
+        ):
+            via_vertex = await run_command(
+                catalog(),
+                {"command": "trim this video to 2 sec", "timeline": timeline(), "library": []},
+            )
+        self.assertEqual(via_vertex["planner"], "vertex")
+        self.assertIn("DigitalOcean busy; trying Vertex.", via_vertex["note"])
+        self.assertEqual(via_vertex["ops"][0]["op"], "trim")
+
+        with (
+            patch.dict(os.environ, _blank_cloud_env(DO_MODEL_KEY="do-key", SENSE_GEMINI="0")),
+            patch("sense.planner._choose_planner", use_do),
+            patch("sense.planner._vertex_enabled", return_value=False),
+            patch("sense.planner.httpx.AsyncClient", _DoBusyThenE4B),
+        ):
+            via_e4b = await run_command(
+                catalog(),
+                {"command": "trim this video to 2 sec", "timeline": timeline(), "library": []},
+            )
+        self.assertEqual(via_e4b["planner"], "e4b")
+        self.assertIn("DigitalOcean busy; using local E4B.", via_e4b["note"])
         self.assertEqual(via_e4b["ops"][0]["op"], "trim")
 
 
