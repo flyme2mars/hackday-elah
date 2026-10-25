@@ -1,0 +1,15 @@
+{
+  "url": "http://127.0.0.1:43124",
+  "chrome": "155.0.8059.79",
+  "media_responses_deliberately_held": true,
+  "cards": 300,
+  "cards_intersecting_scroll_panel": 6,
+  "dom_videos": 300,
+  "created_video_elements": 600,
+  "held_requests": 600,
+  "warnings": [
+    "[]Automatic fallback to software WebGL has been deprecated. Please use the --enable-unsafe-swiftshader flag to opt in to lower security guarantees for trusted content.",
+    "[.WebGL-0x133c00134200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+    "[.WebGL-0x133c00134200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+  ]
+}

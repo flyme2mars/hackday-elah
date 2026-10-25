@@ -1,0 +1,47 @@
+{
+  "chrome": "155.0.8059.79",
+  "platform": "linux",
+  "results": [
+    {
+      "url": "http://127.0.0.1:43124",
+      "run": 0,
+      "assets": 12,
+      "cpu_throttle": 4,
+      "empty_load_ms": 1972.3999999985099,
+      "search": {
+        "ms": 590,
+        "long_tasks": []
+      },
+      "typing": {
+        "ms": 1142,
+        "long_tasks": []
+      },
+      "place": {
+        "ms": 255.89999999850988,
+        "long_tasks": []
+      },
+      "split": {
+        "ms": 426.8999999985099,
+        "long_tasks": []
+      },
+      "transform": {
+        "ms": 410.6000000014901,
+        "long_tasks": []
+      },
+      "motion": {
+        "ms": 630.6999999992549,
+        "long_tasks": []
+      },
+      "scrub": {
+        "ms": 696.6999999992549,
+        "long_tasks": []
+      },
+      "export_attempt": null,
+      "export_outcome": "Failed audit deadline: no completion within 30 seconds",
+      "js_heap_bytes_after_gc": 5979360,
+      "requests": 5,
+      "errors": [],
+      "failures": []
+    }
+  ]
+}

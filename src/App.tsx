@@ -3,6 +3,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type ReactNode,
   useEffect,
+  useCallback,
   useRef,
   useState,
 } from 'react'
@@ -81,6 +82,10 @@ import {
 
 const demuxerFactory = createDefaultDemuxerFactory()
 
+function prepareAsset(asset: LibraryAsset) {
+  void ensureImported(asset)
+}
+
 const INITIAL_TRACKS: InitialTrackConfig[] = [
   { kind: 'video', name: 'V1', protected: true },
   { kind: 'video', name: 'V2', protected: true },
@@ -139,6 +144,14 @@ function EditorShell() {
   const totalFrames = useTracksStore((state) => state.totalFrames)
   const selectedIds = getSelectedClipIds(engine)
   const selectedCount = selectedIds.length
+  const closeMenu = useCallback(() => {
+    commitClipRotation(engine)
+    setMenu(null)
+    setTransitionMenu(null)
+  }, [engine])
+  const fitTimeline = useCallback(() => {
+    requestAnimationFrame(() => timelineRef.current?.fitToWindow())
+  }, [])
   useEffect(() => selectSplitResults(engine), [engine])
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => timelineShortcut(engine, event)
@@ -175,30 +188,29 @@ function EditorShell() {
     }
   }, [library, results])
 
-  async function onUpload(files: readonly File[]) {
-    closeMenu()
-    setBusy(true)
-    try {
-      const added = await importLocalFiles(files)
-      if (added.length === 0) {
-        setStatus('Nothing new to add.')
-        return
+  const onUpload = useCallback(
+    async (files: readonly File[]) => {
+      closeMenu()
+      setBusy(true)
+      try {
+        const added = await importLocalFiles(files)
+        if (added.length === 0) {
+          setStatus('Nothing new to add.')
+          return
+        }
+        setLibrary((current) => {
+          const ids = new Set(added.map((item) => item.vaultId))
+          return [...added, ...current.filter((item) => !ids.has(item.vaultId))]
+        })
+        setStatus('Done')
+      } catch (error) {
+        setStatus(oneLine(error))
+      } finally {
+        setBusy(false)
       }
-      setLibrary((current) => {
-        const ids = new Set(added.map((item) => item.vaultId))
-        return [...added, ...current.filter((item) => !ids.has(item.vaultId))]
-      })
-      setStatus('Done')
-    } catch (error) {
-      setStatus(oneLine(error))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  function fitTimeline() {
-    requestAnimationFrame(() => timelineRef.current?.fitToWindow())
-  }
+    },
+    [closeMenu],
+  )
 
   function onDragAsset(data: DataTransfer, asset: LibraryAsset, assetId: string) {
     beginMediaDrag(data, asset, assetId, engine)
@@ -210,20 +222,23 @@ function EditorShell() {
     setLibrary((current) => mergeLibraryAssets(current, [placed]))
   }
 
-  async function onPlace(asset: LibraryAsset) {
-    closeMenu()
-    setBusy(true)
-    try {
-      await placeAsset(engine, asset)
-      setLibrary((current) => mergeLibraryAssets(current, [asset]))
-      fitTimeline()
-      setStatus('Done')
-    } catch (error) {
-      setStatus(oneLine(error))
-    } finally {
-      setBusy(false)
-    }
-  }
+  const onPlace = useCallback(
+    async (asset: LibraryAsset) => {
+      closeMenu()
+      setBusy(true)
+      try {
+        await placeAsset(engine, asset)
+        setLibrary((current) => mergeLibraryAssets(current, [asset]))
+        fitTimeline()
+        setStatus('Done')
+      } catch (error) {
+        setStatus(oneLine(error))
+      } finally {
+        setBusy(false)
+      }
+    },
+    [closeMenu, engine, fitTimeline],
+  )
 
   async function onSubmit() {
     const text = command.trim()
@@ -320,12 +335,6 @@ function EditorShell() {
   const rotationSize = useRef<{ width: number; height: number } | undefined>(
     undefined,
   )
-
-  function closeMenu() {
-    commitClipRotation(engine)
-    setMenu(null)
-    setTransitionMenu(null)
-  }
 
   function onSplitClip(clipId: string) {
     const previousSelection = getSelectedClipIds(engine)
@@ -500,11 +509,11 @@ function EditorShell() {
         library={library}
         results={results}
         readyIds={readyIds}
-        onPlace={(asset) => void onPlace(asset)}
-        onPrepare={(asset) => void ensureImported(asset)}
+        onPlace={onPlace}
+        onPrepare={prepareAsset}
         onDragAsset={onDragAsset}
         onDragAssetEnd={onDragAssetEnd}
-        onUpload={(files) => void onUpload(files)}
+        onUpload={onUpload}
       />
       <section className="stage" aria-label="Preview" tabIndex={0}>
         <header className="stage-bar">
