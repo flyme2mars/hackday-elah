@@ -15,7 +15,8 @@ import {
 import CommandBar from './CommandBar.tsx'
 import MediaPanel from './MediaPanel.tsx'
 import { applyOps, getTimeline, reconcileClipVaults, vaultIdForClip } from './host/applyOps.ts'
-import { canExportMp4, exportMp4 } from './host/exportMp4.ts'
+import { canExportMp4, exportErrorLine, exportMp4 } from './host/exportMp4.ts'
+import { clipStatus } from './host/statusLine.ts'
 import { listLibraryAssets, registerAssets, type LibraryAsset } from './host/library.ts'
 import { ensureImported, importLocalFiles } from './host/media.ts'
 import { placeAsset } from './host/place.ts'
@@ -27,7 +28,7 @@ import {
   wrapDegrees,
 } from './host/rotate.ts'
 import { FPS } from './host/types.ts'
-import { findSimilar, isWorkerDown, loadLibrary, runCommand } from './sense/client.ts'
+import { commandErrorLine, commandStatusLine, findSimilar, loadLibrary, runCommand, similarErrorLine } from './sense/client.ts'
 
 const demuxerFactory = createDefaultDemuxerFactory()
 
@@ -164,9 +165,9 @@ function EditorShell() {
         fitTimeline()
       }
       setCommand('')
-      setStatus(result.note || (result.ops.length > 0 || result.hits.length > 0 ? 'Done' : 'No edits.'))
+      setStatus(commandStatusLine(result))
     } catch (error) {
-      setStatus(isWorkerDown(error) ? 'Sense worker is not running.' : oneLine(error))
+      setStatus(commandErrorLine(error))
     } finally {
       setBusy(false)
     }
@@ -185,9 +186,9 @@ function EditorShell() {
     try {
       const result = await findSimilar(vaultId, getTimeline(engine), listLibraryAssets())
       setResults(result.hits)
-      setStatus(result.note || 'Done')
+      setStatus(clipStatus(result.note) || 'Done')
     } catch (error) {
-      setStatus(isWorkerDown(error) ? 'Sense worker is not running.' : oneLine(error))
+      setStatus(similarErrorLine(error))
     } finally {
       setBusy(false)
     }
@@ -322,25 +323,28 @@ function HistoryButtons() {
 function ExportButton({ onStatus }: { onStatus: (status: string) => void }) {
   const engine = useTimelineEngine()
   const [busy, setBusy] = useState(false)
-  const exportReady = canExportMp4()
 
   async function onExport() {
     setBusy(true)
-    onStatus('Exporting…')
     try {
+      if (!canExportMp4() || engine.getTotalFrames() < 1) {
+        await exportMp4(engine)
+        return
+      }
+      onStatus('Exporting…')
       await exportMp4(engine, {
         onProgress: (percent) => onStatus(`Exporting ${percent}%`),
       })
       onStatus('Saved edit.mp4.')
     } catch (error) {
-      onStatus(oneLine(error))
+      onStatus(exportErrorLine(error))
     } finally {
       setBusy(false)
     }
   }
 
   return (
-    <button type="button" className="btn" disabled={!exportReady || busy} onClick={() => void onExport()}>
+    <button type="button" className="btn" disabled={busy} onClick={() => void onExport()}>
       Export
     </button>
   )
@@ -486,8 +490,7 @@ function DebugSnapshot() {
 }
 
 function oneLine(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error)
-  return message.replace(/\s+/g, ' ').trim()
+  return clipStatus(error instanceof Error ? error.message : String(error)) || 'That failed.'
 }
 
 class PreviewBoundary extends Component<{ children: ReactNode }, { message: string | null }> {

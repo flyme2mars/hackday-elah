@@ -1,16 +1,18 @@
 # Sense
 
-Local FastAPI worker for the editor. It searches the vault, pulls a frame, asks Parakeet for a transcript, and runs one tool loop against Vertex or a local Gemma. The browser never holds cloud credentials.
+Local FastAPI worker for the editor. It searches the vault, pulls a frame, asks Parakeet for a transcript, and runs one tool loop. The planner tries the Gemini API, then Vertex MaaS, then local Gemma E4B. The browser never holds cloud credentials.
 
 Default bind: `127.0.0.1:8765`. Vite proxies `/api` to that port.
 
 ## Mac
 
 ```bash
-cd ~/code/hackday-elah-editor
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r sense/requirements.txt
+
+# Optional Gemini primary. .gemini.env is gitignored.
+set -a && source .gemini.env && set +a
 
 export SENSE_VAULT="$HOME/HackDayVault"
 export SENSE_MLX_URL="http://127.0.0.1:8787"
@@ -36,7 +38,7 @@ Vertex uses Application Default Credentials. On the Mac:
 gcloud auth application-default login
 ```
 
-The credential file is `~/.config/gcloud/application_default_credentials.json`. If you keep it somewhere else, set `GOOGLE_APPLICATION_CREDENTIALS` to that file. Restart the worker after login. `SENSE_VERTEX=0` skips Vertex.
+The credential file is `~/.config/gcloud/application_default_credentials.json`. If you keep it somewhere else, set `GOOGLE_APPLICATION_CREDENTIALS` to that file. Restart the worker after login. `SENSE_GEMINI=0` skips the Gemini API. `SENSE_VERTEX=0` skips Vertex.
 
 ## Models
 
@@ -51,7 +53,7 @@ The worker does not load EmbeddingGemma, Parakeet, or Gemma E4B itself. It calls
 
 Embedding responses may be `{"data":[{"embedding":[...]}]}` or `{"embedding":[...]}`. Transcription responses may be `{"text":"..."}` or `{"transcript":"..."}`.
 
-If those routes differ in the MLX repo, point the env vars at the real ones. A missing route is reported as the model not loaded. Search then matches names and says so. The planner does not invent timeline ops when Vertex and the local model are both down.
+If those routes differ in the MLX repo, point the env vars at the real ones. A missing route is reported as the model not loaded. Search then matches names and says so. The planner does not invent timeline ops when Gemini, Vertex, and the local model are all down.
 
 `GET /health` includes `npz_keys` and `npz_error` when a `vault_index_*.npz` file is present but the arrays are not `ids` plus `embeddings` (also accepted: `vault_ids`, `names`, `vectors`, `emb`, `X`).
 

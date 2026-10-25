@@ -1,4 +1,4 @@
-"""Tool loop. Vertex Gemma when ADC exists, otherwise local E4B, otherwise no invented edits."""
+"""Tool loop. Gemini API, then Vertex MaaS, then local E4B. No invented edits when all are down."""
 
 from __future__ import annotations
 
