@@ -1,12 +1,23 @@
-import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState, type ReactNode } from 'react'
 import {
   Plus,
   Film,
   AudioLines,
   Image as ImageIcon,
   FolderOpen,
+  Pause,
+  Play,
 } from 'lucide-react'
 import type { LibraryAsset, LibraryKind } from './host/library.ts'
+import {
+  playableKind,
+  previewCardId,
+  previewControlLabel,
+  reduceSidebarPreview,
+  type SidebarPreview,
+  type SidebarPreviewKind,
+  type SidebarPreviewScope,
+} from './host/sidebarPreview.ts'
 
 const KINDS: { kind: LibraryKind; label: string }[] = [
   { kind: 'video', label: 'Video' },
@@ -39,7 +50,35 @@ export default memo(function MediaPanel({
   onUpload,
 }: MediaPanelProps) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const [preview, dispatch] = useReducer(reduceSidebarPreview, null)
   const hits = results && results.length > 0 ? results : null
+  const togglePreview = useCallback((item: LibraryAsset, scope: SidebarPreviewScope) => {
+    const kind = playableKind(item.kind)
+    if (!kind || !item.src) return
+    dispatch({
+      type: 'toggle',
+      cardId: previewCardId(scope, item.vaultId),
+      vaultId: item.vaultId,
+      kind,
+      src: item.src,
+    })
+  }, [])
+  const stopPreview = useCallback(() => {
+    dispatch({ type: 'stop' })
+  }, [])
+  const releasePreview = useCallback((cardId: string) => {
+    dispatch({ type: 'release', cardId })
+  }, [])
+
+  useEffect(() => {
+    if (!preview) return
+    function onKey(event: KeyboardEvent) {
+      if (event.key !== 'Escape' || event.repeat) return
+      dispatch({ type: 'stop' })
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [preview])
 
   return (
     <aside className="media" aria-label="Media">
@@ -73,6 +112,7 @@ export default memo(function MediaPanel({
         <ScrollingAssets
           className="media-library"
           label="Library"
+          scope="library"
           heading={
             <h2>
               Library <span>All assets</span>
@@ -89,6 +129,10 @@ export default memo(function MediaPanel({
             ) : null
           }
           readyIds={readyIds}
+          preview={preview}
+          onTogglePreview={togglePreview}
+          onStopPreview={stopPreview}
+          onReleasePreview={releasePreview}
           onPlace={onPlace}
           onPrepare={onPrepare}
           onDragAsset={onDragAsset}
@@ -98,6 +142,7 @@ export default memo(function MediaPanel({
           <ScrollingAssets
             className="media-search"
             label="Search"
+            scope="search"
             heading={
               <h2>
                 Search <span>{hits?.length ?? 0} results</span>
@@ -106,6 +151,10 @@ export default memo(function MediaPanel({
             items={hits ?? []}
             empty={hits ? null : <p className="quiet">No matches in the library.</p>}
             readyIds={readyIds}
+            preview={preview}
+            onTogglePreview={togglePreview}
+            onStopPreview={stopPreview}
+            onReleasePreview={releasePreview}
             onPlace={onPlace}
             onPrepare={onPrepare}
             onDragAsset={onDragAsset}
@@ -120,10 +169,15 @@ export default memo(function MediaPanel({
 function ScrollingAssets({
   className,
   label,
+  scope,
   heading,
   items,
   empty,
   readyIds,
+  preview,
+  onTogglePreview,
+  onStopPreview,
+  onReleasePreview,
   onPlace,
   onPrepare,
   onDragAsset,
@@ -131,10 +185,15 @@ function ScrollingAssets({
 }: {
   className: string
   label: string
+  scope: SidebarPreviewScope
   heading: ReactNode
   items: readonly LibraryAsset[]
   empty: ReactNode
   readyIds: ReadonlyMap<string, string>
+  preview: SidebarPreview | null
+  onTogglePreview: (asset: LibraryAsset, scope: SidebarPreviewScope) => void
+  onStopPreview: () => void
+  onReleasePreview: (cardId: string) => void
   onPlace: (asset: LibraryAsset) => void
   onPrepare: (asset: LibraryAsset) => void
   onDragAsset: (data: DataTransfer, asset: LibraryAsset, assetId: string) => void
@@ -147,9 +206,14 @@ function ScrollingAssets({
       {empty}
       <KindSections
         items={items}
+        scope={scope}
         nearIds={nearIds}
         watch={watch}
         readyIds={readyIds}
+        preview={preview}
+        onTogglePreview={onTogglePreview}
+        onStopPreview={onStopPreview}
+        onReleasePreview={onReleasePreview}
         onPlace={onPlace}
         onPrepare={onPrepare}
         onDragAsset={onDragAsset}
@@ -215,18 +279,28 @@ function useVisibleCards() {
 
 function KindSections({
   items,
+  scope,
   nearIds,
   watch,
   readyIds,
+  preview,
+  onTogglePreview,
+  onStopPreview,
+  onReleasePreview,
   onPlace,
   onPrepare,
   onDragAsset,
   onDragAssetEnd,
 }: {
   items: readonly LibraryAsset[]
+  scope: SidebarPreviewScope
   nearIds: ReadonlySet<string>
   watch: (vaultId: string, node: HTMLElement) => () => void
   readyIds: ReadonlyMap<string, string>
+  preview: SidebarPreview | null
+  onTogglePreview: (asset: LibraryAsset, scope: SidebarPreviewScope) => void
+  onStopPreview: () => void
+  onReleasePreview: (cardId: string) => void
   onPlace: (asset: LibraryAsset) => void
   onPrepare: (asset: LibraryAsset) => void
   onDragAsset: (data: DataTransfer, asset: LibraryAsset, assetId: string) => void
@@ -255,9 +329,14 @@ function KindSections({
                 <HitCard
                   key={item.vaultId}
                   item={item}
+                  scope={scope}
                   near={nearIds.has(item.vaultId)}
                   watch={watch}
                   assetId={readyIds.get(item.vaultId)}
+                  preview={preview}
+                  onTogglePreview={onTogglePreview}
+                  onStopPreview={onStopPreview}
+                  onReleasePreview={onReleasePreview}
                   onPlace={onPlace}
                   onPrepare={onPrepare}
                   onDragAsset={onDragAsset}
@@ -274,24 +353,38 @@ function KindSections({
 
 function HitCard({
   item,
+  scope,
   near,
   watch,
   assetId,
+  preview,
+  onTogglePreview,
+  onStopPreview,
+  onReleasePreview,
   onPlace,
   onPrepare,
   onDragAsset,
   onDragAssetEnd,
 }: {
   item: LibraryAsset
+  scope: SidebarPreviewScope
   near: boolean
   watch: (vaultId: string, node: HTMLElement) => () => void
   assetId: string | undefined
+  preview: SidebarPreview | null
+  onTogglePreview: (asset: LibraryAsset, scope: SidebarPreviewScope) => void
+  onStopPreview: () => void
+  onReleasePreview: (cardId: string) => void
   onPlace: (asset: LibraryAsset) => void
   onPrepare: (asset: LibraryAsset) => void
   onDragAsset: (data: DataTransfer, asset: LibraryAsset, assetId: string) => void
   onDragAssetEnd: (assetId: string) => void
 }) {
   const ref = useRef<HTMLButtonElement>(null)
+  const cardId = previewCardId(scope, item.vaultId)
+  const selected = preview?.cardId === cardId ? preview : null
+  const liveVideo = selected?.kind === 'video'
+  const kind = playableKind(item.kind)
   useEffect(() => {
     const node = ref.current
     if (!node) return
@@ -300,76 +393,215 @@ function HitCard({
   useEffect(() => {
     if (near) onPrepare(item)
   }, [near, item, onPrepare])
+  useEffect(() => {
+    return () => onReleasePreview(cardId)
+  }, [cardId, onReleasePreview])
 
   return (
-    <button
-      ref={ref}
-      type="button"
-      className="hit"
-      data-vault-id={item.vaultId}
-      draggable={assetId !== undefined}
-      onPointerDown={() => onPrepare(item)}
-      onFocus={() => onPrepare(item)}
-      onClick={() => onPlace(item)}
-      onDragStart={(event) => {
-        if (!assetId) {
-          event.preventDefault()
-          return
-        }
-        onDragAsset(event.dataTransfer, item, assetId)
-      }}
-      onDragEnd={() => {
-        if (assetId) onDragAssetEnd(assetId)
-      }}
-    >
-      <Thumb item={item} active={near} />
-      <span className="hit-copy">
-        <span className="hit-name" title={item.name}>
-          {item.name}
+    <div className="hit-wrap">
+      <button
+        ref={ref}
+        type="button"
+        className="hit"
+        data-vault-id={item.vaultId}
+        draggable={assetId !== undefined}
+        onPointerDown={() => onPrepare(item)}
+        onFocus={() => onPrepare(item)}
+        onClick={() => onPlace(item)}
+        onDragStart={(event) => {
+          if (!assetId) {
+            event.preventDefault()
+            return
+          }
+          onDragAsset(event.dataTransfer, item, assetId)
+        }}
+        onDragEnd={() => {
+          if (assetId) onDragAssetEnd(assetId)
+        }}
+      >
+        <Thumb
+          item={item}
+          active={near && !liveVideo}
+          overlay={
+            selected ? (
+              <CardPreview
+                kind={selected.kind}
+                src={selected.src}
+                playing={selected.playing}
+                onStop={onStopPreview}
+              />
+            ) : null
+          }
+        />
+        <span className="hit-copy">
+          <span className="hit-name" title={item.name}>
+            {item.name}
+          </span>
+          {item.durationSec !== null && (
+            <span className="hit-meta">{formatDuration(item.durationSec)}</span>
+          )}
         </span>
-        {item.durationSec !== null && (
-          <span className="hit-meta">{formatDuration(item.durationSec)}</span>
-        )}
-      </span>
-    </button>
+      </button>
+      {kind && (
+        <button
+          type="button"
+          className="hit-play"
+          aria-label={previewControlLabel(item.name, selected?.playing === true)}
+          aria-pressed={selected?.playing === true}
+          disabled={!item.src}
+          data-state={selected ? (selected.playing ? 'playing' : 'paused') : undefined}
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            onTogglePreview(item, scope)
+          }}
+        >
+          {selected?.playing ? (
+            <Pause size={11} fill="currentColor" aria-hidden="true" />
+          ) : (
+            <Play size={11} fill="currentColor" aria-hidden="true" />
+          )}
+        </button>
+      )}
+    </div>
   )
 }
 
-function Thumb({ item, active }: { item: LibraryAsset; active: boolean }) {
-  if (item.kind === 'audio') {
-    return (
-      <span className="thumb thumb-audio" aria-hidden="true">
-        <AudioLines size={30} strokeWidth={1} />
-      </span>
-    )
+function CardPreview({
+  kind,
+  src,
+  playing,
+  onStop,
+}: {
+  kind: SidebarPreviewKind
+  src: string
+  playing: boolean
+  onStop: () => void
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const barRef = useRef<HTMLSpanElement>(null)
+  const onStopRef = useRef(onStop)
+  useEffect(() => {
+    onStopRef.current = onStop
+  }, [onStop])
+
+  useLayoutEffect(() => {
+    const media = videoRef.current ?? audioRef.current
+    if (!media) return
+    if (!playing) {
+      media.pause()
+      return
+    }
+    let cancel = false
+    if (kind === 'video') media.muted = false
+    const giveUp = (error: unknown) => {
+      if (cancel) return
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      onStopRef.current()
+    }
+    void media.play().catch((error: unknown) => {
+      if (cancel) return
+      if (error instanceof DOMException && error.name === 'AbortError') return
+      if (
+        kind === 'video' &&
+        error instanceof DOMException &&
+        error.name === 'NotAllowedError' &&
+        !media.muted
+      ) {
+        media.muted = true
+        void media.play().catch(giveUp)
+        return
+      }
+      giveUp(error)
+    })
+    return () => {
+      cancel = true
+    }
+  }, [playing, src, kind])
+
+  function endIfBroken(media: HTMLMediaElement) {
+    if (!media.isConnected) return
+    if (media.error?.code === MediaError.MEDIA_ERR_ABORTED) return
+    onStopRef.current()
   }
-  if (!active) return <span className="thumb" aria-hidden="true" />
-  if (item.thumb) {
-    return (
-      <span className="thumb">
-        <img src={item.thumb} alt="" />
-      </span>
-    )
+
+  function paint(media: HTMLMediaElement) {
+    const bar = barRef.current
+    if (!bar) return
+    const duration = media.duration
+    const ratio = Number.isFinite(duration) && duration > 0 ? media.currentTime / duration : 0
+    bar.style.transform = `scaleX(${Math.min(1, Math.max(0, ratio))})`
   }
-  if (item.kind === 'video') {
-    return (
-      <span className="thumb">
+
+  return (
+    <>
+      {kind === 'video' ? (
         <video
-          src={item.src}
-          muted
+          ref={videoRef}
+          className="thumb-live"
+          src={src}
           playsInline
-          preload="metadata"
-          onLoadedMetadata={(event) => {
-            const video = event.currentTarget
-            if (video.currentTime === 0) video.currentTime = 0.2
-          }}
+          preload="auto"
+          onTimeUpdate={(event) => paint(event.currentTarget)}
+          onLoadedMetadata={(event) => paint(event.currentTarget)}
+          onEnded={() => onStopRef.current()}
+          onError={(event) => endIfBroken(event.currentTarget)}
         />
+      ) : (
+        <audio
+          ref={audioRef}
+          className="sidebar-preview-audio"
+          src={src}
+          preload="auto"
+          onTimeUpdate={(event) => paint(event.currentTarget)}
+          onLoadedMetadata={(event) => paint(event.currentTarget)}
+          onEnded={() => onStopRef.current()}
+          onError={(event) => endIfBroken(event.currentTarget)}
+        />
+      )}
+      <span className="hit-progress" aria-hidden="true">
+        <span ref={barRef} />
       </span>
+    </>
+  )
+}
+
+function Thumb({
+  item,
+  active,
+  overlay,
+}: {
+  item: LibraryAsset
+  active: boolean
+  overlay?: ReactNode
+}) {
+  const audio = item.kind === 'audio'
+  let face: ReactNode = null
+  if (audio) {
+    face = <AudioLines size={30} strokeWidth={1} />
+  } else if (active && item.thumb) {
+    face = <img src={item.thumb} alt="" />
+  } else if (active && item.kind === 'video') {
+    face = (
+      <video
+        src={item.src}
+        muted
+        playsInline
+        preload="metadata"
+        onLoadedMetadata={(event) => {
+          const video = event.currentTarget
+          if (video.currentTime === 0) video.currentTime = 0.2
+        }}
+      />
     )
+  } else if (active) {
+    face = <img src={item.src} alt="" />
   }
   return (
-    <span className="thumb">
-      <img src={item.src} alt="" />
+    <span className={audio ? 'thumb thumb-audio' : 'thumb'} aria-hidden={audio || !active ? true : undefined}>
+      {face}
+      {overlay}
     </span>
   )
 }
