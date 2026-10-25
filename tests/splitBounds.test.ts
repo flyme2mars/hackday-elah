@@ -55,6 +55,24 @@ test('split at the clip start and at the exact end both leave two halves', () =>
   assert.equal(fromEnd[0].durationFrames + fromEnd[1].durationFrames, 90)
 })
 
+test('split at 0s then remove the right half keeps the left', () => {
+  const { engine, trackId, clipId } = engineWithClip(120, 90)
+  applyListedOps(
+    engine,
+    [
+      { op: 'split', clip_id: clipId, at_s: 0, right_id: 'right-half' },
+      { op: 'remove', clip_id: 'right-half' },
+    ],
+    new Map(),
+    'Cut',
+  )
+  const clips = engine.getClipsOnTrack(trackId)
+  assert.equal(clips.length, 1)
+  assert.equal(clips[0].id, clipId)
+  assert.ok(clips[0].durationFrames >= 1)
+  assert.ok(clips[0].durationFrames < 90)
+})
+
 test('a split far outside the clip names the clip range', () => {
   const { engine, clipId } = engineWithClip(120, 90)
   assert.throws(
