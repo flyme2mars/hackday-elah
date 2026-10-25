@@ -5,6 +5,14 @@ import {
   type TimelineEngine,
   type Transform,
 } from '@elah/editor'
+import {
+  assertMotionKeys,
+  clearedMotionPatch,
+  readHostMotion,
+  writeTrack,
+  type MotionKey,
+  type MotionProperty,
+} from './motion.ts'
 
 /** Elah applies `transform.rotation` with sin/cos and canvas `rotate`, so the unit is radians. */
 const DEG_TO_RAD = Math.PI / 180
@@ -77,11 +85,50 @@ export function setClipTransform(
   const prev = clip.transform
   const rotation = nextRotation(prev?.rotation ?? 0, change)
   const transform = buildTransform(engine, clip, rotation, change, measured ?? sizeFromLibrary(clip))
+  const patch = { transform, ...(clearedMotionPatch(clip, touchedProperties(change)) ?? {}) } as Partial<Clip>
   if (options?.preview) {
-    engine.previewClip(clip.id, found.trackId, { transform })
+    engine.previewClip(clip.id, found.trackId, patch)
     return
   }
-  engine.updateClip(clip.id, found.trackId, { transform })
+  engine.updateClip(clip.id, found.trackId, patch)
+}
+
+/** Straight-line motion on one property. The first key is also the resting pose. */
+export function setClipMotion(
+  engine: TimelineEngine,
+  clipId: string,
+  property: MotionProperty,
+  keys: readonly MotionKey[],
+): void {
+  assertMotionKeys(property, keys)
+  const found = engine.findClip(clipId)
+  if (!found) throw new Error(`Unknown clip "${clipId}"`)
+  const clip = found.clip
+  const sorted = [...keys].sort((left, right) => left.t - right.t)
+  const first = sorted[0]
+  if (!first) throw new Error('Motion needs at least two keys.')
+  const hostMotion = writeTrack(readHostMotion(clip), property, sorted)
+  const patch: { hostMotion: typeof hostMotion; transform?: Transform; opacity?: number } = { hostMotion }
+  if (property === 'opacity') {
+    patch.opacity = first.value
+  } else {
+    const prev = clip.transform ?? { x: 0.5, y: 0.5, scale: 1, rotation: 0, anchor: { x: 0.5, y: 0.5 } }
+    patch.transform = {
+      ...prev,
+      anchor: prev.anchor ?? { x: 0.5, y: 0.5 },
+      ...(property === 'rotation' ? { rotation: first.value * DEG_TO_RAD } : { [property]: first.value }),
+    }
+  }
+  engine.updateClip(clip.id, found.trackId, patch as Partial<Clip>)
+}
+
+function touchedProperties(change: TransformChange): MotionProperty[] {
+  const properties: MotionProperty[] = []
+  if (change.absoluteDegrees !== undefined || change.deltaDegrees !== undefined) properties.push('rotation')
+  if (change.scale !== undefined) properties.push('scale')
+  if (change.x !== undefined) properties.push('x')
+  if (change.y !== undefined) properties.push('y')
+  return properties
 }
 
 /** One undo step for a run of `setClipRotation(..., { preview: true })` calls. */

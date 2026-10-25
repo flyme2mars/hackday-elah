@@ -1,3 +1,5 @@
+import type { MotionProperty } from './motion.ts'
+
 export const FPS = 30
 
 export const TRACK_ALIASES = ['V1', 'V2', 'A1', 'T1'] as const
@@ -66,6 +68,12 @@ export type Op =
       y?: number
     }
   | {
+      op: 'set_motion'
+      clip_id: string
+      property: MotionProperty
+      keys: { t_s: number; value: number }[]
+    }
+  | {
       op: 'update_text'
       clip_id: string
       content?: string
@@ -94,6 +102,7 @@ export interface TimelineClipSnapshot {
   y: number
   content?: string
   vault_id?: string
+  motion?: Partial<Record<MotionProperty, { t_s: number; value: number }[]>>
 }
 
 export interface TimelineTrackSnapshot {

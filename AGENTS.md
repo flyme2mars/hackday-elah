@@ -28,6 +28,7 @@ Vault: ~/HackDayVault   (SENSE_VAULT)
 | `src/host/applyOps.ts` | Applies `ops` on `TimelineEngine` as one undo step |
 | `src/host/exportMp4.ts`, `src/host/statusLine.ts` | MP4 export and status-line text |
 | `src/host/place.ts`, `rotate.ts`, `orient.ts` | Place, free-angle rotate, no auto upright flip |
+| `src/host/motion.ts`, `resolveTimelineHook.ts` | Host keyframes. Vite redirects Elah `resolveTimeline` so Preview and Export sample them |
 | `src/sense/client.ts` | `POST /api/v1/command` and `/api/similar`. The host does not call `GET /api/library` on boot. |
 | `sense/planner.py` | Tool loop and planner fallbacks |
 | `sense/catalog.py`, `sense/retrieve.py` | Vault index, search, similar |
@@ -65,11 +66,13 @@ Sense tools run in the worker: `search_vault`, `similar`, `get_frame`, `transcri
 
 Tracks: V1 and V2 video, A1 audio, T1 elements (text).
 
-Host ops (`coerceOps` / `applyOps`): `set_stage`, `add_clip`, `add_text`, `trim`, `split`, `move`, `remove`, `set_volume`, `update_text`, `crossfade`, `set_transform`.
+Host ops (`coerceOps` / `applyOps`): `set_stage`, `add_clip`, `add_text`, `trim`, `split`, `move`, `remove`, `set_volume`, `update_text`, `crossfade`, `set_transform`, `set_motion`.
 
 `clip_id` is a host alias for a clip created in the same batch. `vault_id` must already be in the library the browser sent or that search returned.
 
-`set_transform` `rotation` is degrees clockwise. `applyOps` passes that number to `setClipRotation` in `src/host/rotate.ts`, which writes radians on `transform.rotation` inside the command's one undo step. ClipMenu uses the same helper. When the request includes `selected_clip_ids`, trim, rotate, remove, and split use those ids.
+`set_transform` `rotation` is degrees clockwise. `applyOps` passes that number to `setClipRotation` in `src/host/rotate.ts`, which writes radians on `transform.rotation` inside the command's one undo step. ClipMenu uses the same helper. When the request includes `selected_clip_ids`, trim, set_transform, set_motion, remove, and split use those ids. A later rotate keeps an explicit `scale`.
+
+`set_motion` is a straight line on one property: `rotation` (degrees), `scale`, `x`, `y`, or `opacity`. Send `from`, `to`, and `duration_s`, or at least two `keys` of `{t_s, value}`. `t_s` is seconds from the clip start. The host stores the keys on the clip and samples them inside `resolveTimeline`. Preview and the export worker both import that function, so both see every frame. A static `set_transform`, text position, or clip-menu slider clears motion only on the properties it changes. `zoom` is an alias for `scale`.
 
 `needsUprightFlip` in `src/host/orient.ts` returns false. Do not auto-apply `scaleY = -1` on place.
 
@@ -126,7 +129,8 @@ Vertex ADC: `gcloud auth application-default login`. `SENSE_DO=0` skips DigitalO
 ```bash
 npm install
 npm run build
-python -m unittest sense/test_local_plan.py
+node --experimental-strip-types --test tests/motion.test.ts
+python -m unittest sense/test_local_plan.py sense/test_edit_ops.py
 ```
 
 `npm run build` is `tsc -b && vite build`.
