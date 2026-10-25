@@ -83,7 +83,7 @@ Find similar is the timeline context menu, then `POST /similar` with `vault_id`.
 - Monochrome, minimal chrome.
 - One command field under the timeline. No chat transcript.
 - The mic records with `MediaRecorder`, then `POST /api/v1/dictation` sends the clip to local Parakeet on the MLX worker. There is no browser speech recognizer. Click the mic button to start, and click again to send. Hold Option (Alt) to talk, and release to send. Escape cancels either take and does not send. Click mode still stops on trailing silence or at about 18s. Hold mode waits for keyup, and the same 18s cap still applies. `VoiceControl` states stay idle, listening, denied, and unavailable.
-- Media panel classified video / audio / image.
+- Media panel classified video / audio / image. Audio and video cards preview from a play control on the card. One preview plays at a time, and Escape stops it. The card click still places the clip. Drag still starts on the card. A card with no `src` shows a disabled play control. Images have none.
 - No demo copy and no track legends.
 - Status text is one short line under the field (`CommandBar`, `role="status"`). The line clears only when it is `Done`.
 
@@ -130,7 +130,7 @@ Vertex ADC: `gcloud auth application-default login`. `SENSE_DO=0` skips DigitalO
 ```bash
 npm install
 npm run build
-node --experimental-strip-types --test tests/motion.test.ts
+node --experimental-strip-types --test tests/motion.test.ts tests/sidebarPreview.test.ts
 python -m unittest sense/test_local_plan.py sense/test_edit_ops.py
 ```
 
