@@ -40,10 +40,14 @@ Allowed ops (exact names):
 - {"op":"set_transform","clip_id":"...","rotation":180}
 - {"op":"set_transform","clip_id":"...","scale":2}
 - {"op":"set_transform","clip_id":"...","x":0.5,"y":0.4}
+- {"op":"set_motion","clip_id":"...","property":"rotation","from":30,"to":60,"duration_s":3}
+- {"op":"set_motion","clip_id":"...","property":"scale","keys":[{"t_s":0,"value":1},{"t_s":3,"value":2}]}
 
-set_transform rotation is an absolute angle in degrees clockwise. The host stores radians. 180 turns the picture upside down. scale replaces the clip scale. Read the clip's current scale on the timeline. To zoom in, set scale higher than that number. x and y place the clip anchor on the stage, from 0 to 1. Omit any field you are not changing. Use set_transform for rotate, zoom, and scale. Do not search the library for those.
+set_transform rotation is an absolute angle in degrees clockwise. The host stores radians. 180 turns the picture upside down. scale replaces the clip scale. Read the clip's current scale on the timeline. To zoom in, set scale higher than that number. x and y place the clip anchor on the stage, from 0 to 1. Omit any field you are not changing. Use set_transform for a static rotate, zoom, or position. Do not search the library for those.
 
-When the prompt lists Selected clip_ids, those clips are selected. Prefer those ids for trim, set_transform, remove, and split. Cut means split. at_s is seconds on the timeline.
+set_motion animates one property. property is rotation, scale, x, y, or opacity. rotation is degrees clockwise. scale is the same zoom field as set_transform. x and y are stage positions from 0 to 1. opacity is from 0 to 1. Use from, to, and duration_s, or keys with t_s and value. t_s is seconds from the clip start. Send at least two keys. "rotate from 30 to 60 over 3 seconds" and "zoom from 1 to 2 over 3s" are set_motion. A pan while zooming is two set_motion ops. A static set_transform clears motion on the fields it sets.
+
+When the prompt lists Selected clip_ids, those clips are selected. Prefer those ids for trim, set_transform, set_motion, remove, and split. Cut means split. at_s is seconds on the timeline.
 
 When trimming to a new length, send duration_s only. Omit start_s unless the user asked to move the left edge.
 
@@ -116,7 +120,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_ops",
-        "description": "Queue timeline edits for the host as one undo step. Call this for trim, split, move, remove, set_volume, add_text, update_text, crossfade, set_transform, and add_clip. set_transform rotation is degrees clockwise. set_transform scale replaces the clip scale. set_transform x and y are stage positions from 0 to 1. Titles use add_text on T1. Never invent op names.",
+        "description": "Queue timeline edits for the host as one undo step. Call this for trim, split, move, remove, set_volume, add_text, update_text, crossfade, set_transform, set_motion, and add_clip. set_transform rotation is degrees clockwise. set_transform scale replaces the clip scale. set_transform x and y are stage positions from 0 to 1. set_motion animates rotation, scale, x, y, or opacity from one value to another. Titles use add_text on T1. Never invent op names.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -417,7 +421,7 @@ def _prompt(state: TurnState, command: str) -> str:
     selected = ""
     if state.selected_clip_ids:
         joined = ", ".join(state.selected_clip_ids)
-        selected = f"\nSelected clip_ids: {joined}. Prefer these ids for trim, rotate, remove, and split."
+        selected = f"\nSelected clip_ids: {joined}. Prefer these ids for trim, rotate, motion, remove, and split."
     return f"Library:\n{library}{extra}\n\nTimeline:\n{timeline}{selected}\n\nCommand: {command}"
 
 
@@ -443,6 +447,9 @@ def _compact_timeline(timeline: dict[str, Any]) -> dict[str, Any]:
                 value = clip.get(key)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     row[key] = value
+            motion = clip.get("motion")
+            if isinstance(motion, dict):
+                row["motion"] = motion
             clips.append(row)
         tracks.append({"track": track.get("alias") or track.get("name"), "kind": track.get("kind"), "clips": clips})
     return {"stage": timeline.get("stage"), "duration_s": timeline.get("duration_s"), "tracks": tracks}
@@ -1025,6 +1032,19 @@ def _validate_op(raw: object, allow: set[str]) -> dict[str, Any]:
             if key in op and not 0 <= op[key] <= 1:
                 raise OpError(f"{key} must be between 0 and 1.")
         return op
+    if name == "set_motion":
+        property_name = _req_str(raw, "property")
+        if property_name == "zoom":
+            property_name = "scale"
+        if property_name not in {"rotation", "scale", "x", "y", "opacity"}:
+            raise OpError("property must be rotation, scale, x, y, or opacity.")
+        keys = _motion_keys(raw)
+        for key in keys:
+            if key["t_s"] < 0:
+                raise OpError("Motion times must be non-negative.")
+            _check_motion_value(property_name, key["value"])
+        keys.sort(key=lambda key: key["t_s"])
+        return {"op": "set_motion", "clip_id": _req_str(raw, "clip_id"), "property": property_name, "keys": keys}
     if name == "set_volume":
         volume = _req_num(raw, "volume")
         if volume < 0 or volume > 1:
@@ -1051,6 +1071,32 @@ def _validate_text_fields(op: dict[str, Any]) -> None:
             raise OpError(f"{key} must be between 0 and 1.")
 
 
+def _motion_keys(raw: dict[str, Any]) -> list[dict[str, float]]:
+    if "keys" in raw and raw["keys"] is not None:
+        keys = raw["keys"]
+        if not isinstance(keys, list) or not 2 <= len(keys) <= 16:
+            raise OpError("set_motion needs two to sixteen keys.")
+        parsed: list[dict[str, float]] = []
+        for item in keys:
+            if not isinstance(item, dict):
+                raise OpError("Each key needs t_s and value.")
+            parsed.append({"t_s": _req_num(item, "t_s"), "value": _req_num(item, "value")})
+        return parsed
+    if all(raw.get(key) is not None for key in ("from", "to", "duration_s")):
+        duration = _req_num(raw, "duration_s")
+        if duration <= 0:
+            raise OpError("duration_s must be positive.")
+        return [{"t_s": 0.0, "value": _req_num(raw, "from")}, {"t_s": duration, "value": _req_num(raw, "to")}]
+    raise OpError("set_motion needs keys, or from, to, and duration_s.")
+
+
+def _check_motion_value(property_name: str, value: float) -> None:
+    if property_name == "scale" and value <= 0:
+        raise OpError("scale must be positive.")
+    if property_name in {"x", "y", "opacity"} and not 0 <= value <= 1:
+        raise OpError(f"{property_name} must be between 0 and 1.")
+
+
 def _copy_optional(raw: dict[str, Any], op: dict[str, Any], numbers: tuple[str, ...], strings: tuple[str, ...]) -> None:
     for key in numbers:
         if key in raw and raw[key] is not None:
@@ -1064,9 +1110,10 @@ def _copy_optional(raw: dict[str, Any], op: dict[str, Any], numbers: tuple[str, 
 _EDIT_TOKENS = (
     "trim", "cut", "split", "move", "remove", "delete", "rotate", "volume",
     "mute", "text", "title", "caption", "subtitle", "export", "fade", "crossfade", "speed", "zoom", "scale",
+    "pan", "opacity", "animate",
 )
 _FIND_TOKENS = ("find", "search", "look for", "show me", "footage", "clip of", "video of")
-_SELECTION_OPS = frozenset({"trim", "set_transform", "remove", "split"})
+_SELECTION_OPS = frozenset({"trim", "set_transform", "set_motion", "remove", "split"})
 _PLACE_RE = re.compile(r"\b(?:place|put|drop|insert)\b|\badd\b(?!\s+(?:a\s+)?(?:title|text|caption|subtitle)s?\b)")
 
 

@@ -5,7 +5,8 @@ import {
   type Transform,
 } from '@elah/editor'
 import { getLibraryAsset, vaultIdForSrc } from './library.ts'
-import { measureClipForRotation, setClipTransform, wrapDegrees } from './rotate.ts'
+import { clearedMotionPatch, motionForSnapshot, type HostMotion } from './motion.ts'
+import { measureClipForRotation, setClipMotion, setClipTransform, wrapDegrees } from './rotate.ts'
 import {
   frameCountToSeconds,
   secondsToFrameCount,
@@ -381,6 +382,19 @@ function applyOne(
       engine.updateClip(ref.id, ref.trackId, { volume: op.volume })
       return
     }
+    case 'set_motion': {
+      const ref = resolveClip(engine, op.clip_id)
+      setClipMotion(
+        engine,
+        ref.id,
+        op.property,
+        op.keys.map((key) => ({ t: key.t_s, value: key.value })),
+      )
+      const moved = engine.findClip(ref.id)
+      if (!moved) throw new Error(`Clip ${ref.id} is not on the timeline`)
+      remember(op.clip_id, { id: ref.id, trackId: moved.trackId })
+      return
+    }
     case 'set_transform': {
       const ref = resolveClip(engine, op.clip_id)
       setClipTransform(
@@ -406,6 +420,7 @@ function applyOne(
         throw new Error(`"${op.clip_id}" is a ${clip.type} clip, not text`)
       }
       const patch: Partial<Clip> = {}
+      let hostMotion: HostMotion | null | undefined
       if (engine.isTrackLocked(ref.trackId) || clip.locked) throw new Error('The title is locked')
       if (op.content !== undefined) patch.content = op.content
       if (op.start_s !== undefined) patch.startFrame = secondsToFrameCount(op.start_s, fps)
@@ -435,11 +450,20 @@ function applyOne(
           x: op.x ?? prev.x,
           y: op.y ?? prev.y,
         }
+        const cleared = clearedMotionPatch(clip, [
+          ...(op.x !== undefined ? (['x'] as const) : []),
+          ...(op.y !== undefined ? (['y'] as const) : []),
+        ])
+        if (cleared) hostMotion = cleared.hostMotion
       }
       if (Object.keys(patch).length === 0) {
         throw new Error('update_text needs content, timing, or style')
       }
-      engine.updateClip(ref.id, ref.trackId, patch)
+      engine.updateClip(
+        ref.id,
+        ref.trackId,
+        (hostMotion === undefined ? patch : { ...patch, hostMotion }) as Partial<Clip>,
+      )
       return
     }
     case 'crossfade': {
@@ -594,6 +618,7 @@ function aliasFor(clipId: string): string | null {
 
 function clipSnapshot(clip: Clip, fps: number): TimelineSnapshot['tracks'][number]['clips'][number] {
   const vaultId = vaultByClipId.get(clip.id)
+  const motion = motionForSnapshot(clip)
   return {
     id: clip.id,
     alias: aliasFor(clip.id),
@@ -609,5 +634,6 @@ function clipSnapshot(clip: Clip, fps: number): TimelineSnapshot['tracks'][numbe
     y: clip.transform?.y ?? 0.5,
     ...(clip.type === 'text' ? { content: clip.content ?? '' } : {}),
     ...(vaultId ? { vault_id: vaultId } : {}),
+    ...(motion ? { motion } : {}),
   }
 }

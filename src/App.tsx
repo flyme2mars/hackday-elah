@@ -62,6 +62,7 @@ import {
   clipRotationDegrees,
   commitClipRotation,
   measureClipForRotation,
+  setClipMotion,
   setClipRotation,
   setClipTransform,
   wrapDegrees,
@@ -319,6 +320,24 @@ function EditorShell() {
     }
   }
 
+  function onSetMotion(
+    clipId: string,
+    property: 'rotation' | 'scale',
+    from: number,
+    to: number,
+    seconds: number,
+  ) {
+    try {
+      commitClipRotation(engine)
+      setClipMotion(engine, clipId, property, [
+        { t: 0, value: from },
+        { t: seconds, value: to },
+      ])
+    } catch (error) {
+      setStatus(oneLine(error))
+    }
+  }
+
   function onTimelineContextMenu(event: ReactMouseEvent) {
     const target = event.target
     if (!(target instanceof Element)) return
@@ -561,6 +580,9 @@ function EditorShell() {
             onPreview={(degrees) => onPreviewRotation(menu.clipId, degrees)}
             onPreviewScale={(scale) => onPreviewScale(menu.clipId, scale)}
             onCommit={() => commitClipRotation(engine)}
+            onSetMotion={(property, from, to, seconds) =>
+              onSetMotion(menu.clipId, property, from, to, seconds)
+            }
           />
         )}
         {transitionMenu && (
@@ -693,6 +715,7 @@ function ClipMenu({
   onPreview,
   onPreviewScale,
   onCommit,
+  onSetMotion,
 }: {
   anchor: PanelAnchor
   name: string
@@ -703,6 +726,12 @@ function ClipMenu({
   onPreview: (degrees: number) => void
   onPreviewScale: (scale: number) => void
   onCommit: () => void
+  onSetMotion: (
+    property: 'rotation' | 'scale',
+    from: number,
+    to: number,
+    seconds: number,
+  ) => void
 }) {
   const [angle, setAngle] = useState(degrees)
   const [text, setText] = useState(formatDegrees(degrees))
@@ -837,6 +866,27 @@ function ClipMenu({
             }}
           />
         </div>
+        <div className="clip-motion">
+          <div className="clip-motion-heading">Motion</div>
+          <MotionSpan
+            label="Rotation"
+            fromLabel="Rotation from"
+            toLabel="Rotation to"
+            secondsLabel="Rotation seconds"
+            actionLabel="Set rotation motion"
+            initial={degrees}
+            onApply={(from, to, seconds) => onSetMotion('rotation', from, to, seconds)}
+          />
+          <MotionSpan
+            label="Scale"
+            fromLabel="Scale from"
+            toLabel="Scale to"
+            secondsLabel="Scale seconds"
+            actionLabel="Set scale motion"
+            initial={scale}
+            onApply={(from, to, seconds) => onSetMotion('scale', from, to, seconds)}
+          />
+        </div>
       </div>
       <button
         type="button"
@@ -847,6 +897,97 @@ function ClipMenu({
       </button>
     </FloatingPanel>
   )
+}
+
+function MotionSpan({
+  label,
+  fromLabel,
+  toLabel,
+  secondsLabel,
+  actionLabel,
+  initial,
+  onApply,
+}: {
+  label: string
+  fromLabel: string
+  toLabel: string
+  secondsLabel: string
+  actionLabel: string
+  initial: number
+  onApply: (from: number, to: number, seconds: number) => void
+}) {
+  const [from, setFrom] = useState(() => formatMotion(initial))
+  const [to, setTo] = useState(() => formatMotion(initial))
+  const [seconds, setSeconds] = useState('3')
+
+  function apply() {
+    const fromValue = Number(from)
+    const toValue = Number(to)
+    const duration = Number(seconds)
+    if (!Number.isFinite(fromValue) || !Number.isFinite(toValue) || !(duration > 0)) return
+    onApply(fromValue, toValue, duration)
+  }
+
+  return (
+    <div className="clip-motion-row">
+      <span>{label}</span>
+      <label>
+        From
+        <input
+          type="number"
+          inputMode="decimal"
+          aria-label={fromLabel}
+          value={from}
+          onChange={(event) => setFrom(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter') return
+            event.preventDefault()
+            apply()
+          }}
+        />
+      </label>
+      <label>
+        To
+        <input
+          type="number"
+          inputMode="decimal"
+          aria-label={toLabel}
+          value={to}
+          onChange={(event) => setTo(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter') return
+            event.preventDefault()
+            apply()
+          }}
+        />
+      </label>
+      <label>
+        Seconds
+        <input
+          type="number"
+          inputMode="decimal"
+          min={0.01}
+          step={0.1}
+          aria-label={secondsLabel}
+          value={seconds}
+          onChange={(event) => setSeconds(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== 'Enter') return
+            event.preventDefault()
+            apply()
+          }}
+        />
+      </label>
+      <button type="button" aria-label={actionLabel} onClick={apply}>
+        Set
+      </button>
+    </div>
+  )
+}
+
+function formatMotion(value: number): string {
+  if (!Number.isFinite(value)) return '0'
+  return String(Math.round(value * 100) / 100)
 }
 
 function formatDegrees(degrees: number): string {

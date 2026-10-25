@@ -1,3 +1,4 @@
+import { assertMotionKeys, type MotionProperty } from '../host/motion.ts'
 import { registerAssets, type LibraryAsset, type LibraryKind } from '../host/library.ts'
 import { failureStatusLine, isFetchFailure } from '../host/statusLine.ts'
 import type { Op, TimelineSnapshot } from '../host/types.ts'
@@ -183,6 +184,7 @@ const OP_NAMES = new Set([
   'remove',
   'set_volume',
   'set_transform',
+  'set_motion',
   'update_text',
 ])
 
@@ -269,6 +271,8 @@ function coerceOp(raw: unknown, index: number): Op {
       }
     case 'set_transform':
       return coerceTransform(row)
+    case 'set_motion':
+      return coerceMotion(row)
     case 'update_text':
       return {
         op: 'update_text',
@@ -307,6 +311,57 @@ function coerceTransform(row: Record<string, unknown>): Op {
     ...(x !== undefined ? { x } : {}),
     ...(y !== undefined ? { y } : {}),
   }
+}
+
+const MOTION_PROPERTIES = new Set<MotionProperty>(['rotation', 'scale', 'x', 'y', 'opacity'])
+
+function coerceMotion(row: Record<string, unknown>): Op {
+  const property = motionProperty(row.property)
+  const keys = motionKeys(row)
+  assertMotionKeys(
+    property,
+    keys.map((key) => ({ t: key.t_s, value: key.value })),
+  )
+  return {
+    op: 'set_motion',
+    clip_id: requiredString(row, 'clip_id'),
+    property,
+    keys,
+  }
+}
+
+function motionProperty(value: unknown): MotionProperty {
+  const property = value === 'zoom' ? 'scale' : value
+  if (typeof property !== 'string' || !MOTION_PROPERTIES.has(property as MotionProperty)) {
+    throw new Error('property must be rotation, scale, x, y, or opacity.')
+  }
+  return property as MotionProperty
+}
+
+function motionKeys(row: Record<string, unknown>): { t_s: number; value: number }[] {
+  if (Array.isArray(row.keys)) {
+    if (row.keys.length < 2 || row.keys.length > 16) throw new Error('set_motion needs two to sixteen keys.')
+    return row.keys.map((item) => motionKey(item)).sort((left, right) => left.t_s - right.t_s)
+  }
+  const from = presentNumber(row, 'from')
+  const to = presentNumber(row, 'to')
+  const duration = presentNumber(row, 'duration_s')
+  if (from === undefined || to === undefined || duration === undefined) {
+    throw new Error('set_motion needs keys, or from, to, and duration_s.')
+  }
+  if (duration <= 0) throw new Error('duration_s must be positive.')
+  return [
+    { t_s: 0, value: from },
+    { t_s: duration, value: to },
+  ]
+}
+
+function motionKey(value: unknown): { t_s: number; value: number } {
+  if (!value || typeof value !== 'object') throw new Error('Each key needs t_s and value.')
+  const row = value as Record<string, unknown>
+  const t_s = requiredNumber(row, 't_s')
+  if (t_s < 0) throw new Error('Motion times must be non-negative.')
+  return { t_s, value: requiredNumber(row, 'value') }
 }
 
 function presentNumber(row: Record<string, unknown>, key: string): number | undefined {

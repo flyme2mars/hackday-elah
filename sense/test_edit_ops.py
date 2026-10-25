@@ -57,8 +57,21 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("call apply_ops right away", INSTRUCTIONS)
         apply_ops = next(tool for tool in TOOLS if tool["name"] == "apply_ops")
         search = next(tool for tool in TOOLS if tool["name"] == "search_vault")
-        for word in ("trim", "split", "move", "remove", "set_volume", "add_text", "update_text", "crossfade", "set_transform", "add_clip"):
+        for word in ("trim", "split", "move", "remove", "set_volume", "add_text", "update_text", "crossfade", "set_transform", "set_motion", "add_clip"):
             self.assertIn(word, apply_ops["description"])
+        self.assertIn('{"op":"set_motion","clip_id":"...","property":"rotation","from":30,"to":60,"duration_s":3}', INSTRUCTIONS)
+        spun = validate_ops([{"op": "set_motion", "clip_id": "c1", "property": "zoom", "from": "1", "to": 2, "duration_s": "3"}], set())
+        self.assertEqual(spun, [{"op": "set_motion", "clip_id": "c1", "property": "scale", "keys": [{"t_s": 0.0, "value": 1.0}, {"t_s": 3.0, "value": 2.0}]}])
+        keyed = validate_ops([{"op": "set_motion", "clip_id": "c1", "property": "opacity", "keys": [{"t_s": 1, "value": 0}, {"t_s": 0, "value": "1"}]}], set())
+        self.assertEqual(keyed[0]["keys"], [{"t_s": 0.0, "value": 1.0}, {"t_s": 1.0, "value": 0.0}])
+        for bad in (
+            {"op": "set_motion", "clip_id": "c1", "property": "rotation", "from": 0, "to": 10},
+            {"op": "set_motion", "clip_id": "c1", "property": "scale", "from": 1, "to": 0, "duration_s": 1},
+            {"op": "set_motion", "clip_id": "c1", "property": "x", "from": 0, "to": 2, "duration_s": 1},
+            {"op": "set_motion", "clip_id": "c1", "property": "volume", "from": 0, "to": 1, "duration_s": 1},
+        ):
+            with self.assertRaises(OpError):
+                validate_ops([bad], set())
         self.assertIn("Do not use this to trim", search["description"])
         turned = validate_ops([{"op": "set_transform", "clip_id": "c1", "rotation": "180"}], set())
         self.assertEqual(turned, [{"op": "set_transform", "clip_id": "c1", "rotation": 180.0}])
@@ -91,6 +104,10 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
             "rotate this clip 180",
             "zoom in on this clip",
             "scale this clip",
+            "rotate from 30 to 60 over 3 seconds",
+            "zoom from 1 to 2 over 3s",
+            "pan left while zooming",
+            "fade opacity from 1 to 0",
         )
 
         async def search_only(contents, messages):
@@ -164,6 +181,7 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
                 {"op": "trim", "clip_id": "other", "duration_s": 2},
                 {"op": "move", "clip_id": "other", "start_s": 1},
                 {"op": "set_transform", "clip_id": "other", "rotation": 180},
+                {"op": "set_motion", "clip_id": "other", "property": "rotation", "from": 30, "to": 60, "duration_s": 3},
                 {"op": "remove", "clip_id": "other"},
                 {"op": "split", "clip_id": "other", "at_s": 1},
             ]})], contents, messages
@@ -181,6 +199,8 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(by_op["trim"]["clip_id"], "c1")
         self.assertEqual(by_op["set_transform"]["clip_id"], "c1")
         self.assertEqual(by_op["set_transform"]["rotation"], 180.0)
+        self.assertEqual(by_op["set_motion"]["clip_id"], "c1")
+        self.assertEqual(by_op["set_motion"]["keys"][1]["value"], 60.0)
         self.assertEqual(by_op["remove"]["clip_id"], "c1")
         self.assertEqual(by_op["split"]["clip_id"], "c1")
         self.assertEqual(by_op["move"]["clip_id"], "other")

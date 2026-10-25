@@ -116,6 +116,49 @@ export async function runHostCases() {
     check(!String(error).includes('clip menu'), 'rotate is applied by the host')
   }
   check(rotateRejected && engine.getProject() === beforeMissing, 'failed rotate rolls back')
+  const zoomMotion = coerceOps([{ op: 'set_motion', clip_id: a.id, property: 'zoom', from: 1, to: 2, duration_s: 1 }])
+  check(zoomMotion[0]?.op === 'set_motion' && zoomMotion[0].property === 'scale', 'zoom is a scale motion')
+  check(zoomMotion[0]?.op === 'set_motion' && zoomMotion[0].keys[1]?.value === 2, 'from and to become keys')
+  let badMotion = false
+  try {
+    coerceOps([{ op: 'set_motion', clip_id: a.id, property: 'scale', from: 1, to: 0, duration_s: 1 }])
+  } catch (error) {
+    badMotion = true
+    check(String(error).includes('scale must be positive'), 'motion scale stays positive')
+  }
+  check(badMotion, 'a bad motion does not apply')
+  await applyOps(engine, coerceOps([{ op: 'set_motion', clip_id: a.id, property: 'rotation', from: 30, to: 60, duration_s: 1 }]), 'Rotate motion')
+  const spinning = engine.findClip(a.id)?.clip
+  check(spinning?.transform?.scale === 3, 'rotation motion keeps the explicit zoom')
+  check(Math.abs((spinning?.transform?.rotation ?? 0) - (30 * Math.PI / 180)) < 1e-6, 'the first rotation key is the resting pose')
+  const reportedMotion = getTimeline(engine).tracks.flatMap((track) => track.clips).find((clip) => clip.id === a.id)
+  check(reportedMotion?.motion?.rotation?.[1]?.value === 60, 'snapshot keeps the rotation keys')
+  const midScene = resolveTimeline(15, engine.getProject())
+  const midVideo = midScene.videos.find((video) => video.id === a.id)
+  check(Math.abs((midVideo?.transform?.rotation ?? 0) - (45 * Math.PI / 180)) < 1e-6, 'preview samples the rotation halfway')
+  check(midVideo?.transform?.scale === 3, 'sampled rotation leaves the zoom alone')
+  check(Math.abs((engine.findClip(a.id)?.clip.transform?.rotation ?? 0) - (30 * Math.PI / 180)) < 1e-6, 'sampling does not write the clip')
+  const heldScene = resolveTimeline(45, engine.getProject())
+  const heldVideo = heldScene.videos.find((video) => video.id === a.id)
+  check(Math.abs((heldVideo?.transform?.rotation ?? 0) - (60 * Math.PI / 180)) < 1e-6, 'rotation holds after the last key')
+  await applyOps(engine, coerceOps([
+    { op: 'set_motion', clip_id: a.id, property: 'x', from: 0.2, to: 0.8, duration_s: 1 },
+    { op: 'set_motion', clip_id: a.id, property: 'opacity', keys: [{ t_s: 0, value: 1 }, { t_s: 1, value: 0 }] },
+  ]), 'Pan and fade')
+  const mixed = resolveTimeline(15, engine.getProject()).videos.find((video) => video.id === a.id)
+  check(Math.abs((mixed?.transform?.x ?? 0) - 0.5) < 1e-6, 'pan samples halfway')
+  check(Math.abs((mixed?.opacity ?? 1) - 0.5) < 1e-6, 'opacity samples halfway')
+  check(mixed?.transform?.scale === 3, 'pan and fade keep the zoom')
+  await applyOps(engine, coerceOps([{ op: 'set_transform', clip_id: a.id, rotation: 180 }]), 'Static rotate clears motion')
+  const cleared = engine.findClip(a.id)?.clip
+  check(cleared?.transform?.scale === 3, 'a later rotate still keeps the zoom')
+  check(Math.abs((cleared?.transform?.rotation ?? 0) - Math.PI) < 1e-6, 'static rotate replaces the angle')
+  const afterStatic = getTimeline(engine).tracks.flatMap((track) => track.clips).find((clip) => clip.id === a.id)
+  check(afterStatic?.motion?.rotation === undefined, 'static rotate clears rotation keys')
+  check(afterStatic?.motion?.x?.[1]?.value === 0.8, 'static rotate leaves the pan')
+  await applyOps(engine, coerceOps([{ op: 'set_transform', clip_id: a.id, scale: 3 }]), 'Static zoom clears scale motion')
+  check(engine.findClip(a.id)?.clip.transform?.scale === 3, 'static zoom writes scale')
+  check(getTimeline(engine).tracks.flatMap((track) => track.clips).find((clip) => clip.id === a.id)?.motion?.x, 'zoom leaves the pan')
   const selectionIds = selectedPlannerClipIds({
     fps: 30,
     stage: { width: 1080, height: 1920 },
@@ -188,5 +231,5 @@ export async function runHostCases() {
 
   const result = await findSimilar('upload/example.mp4', getTimeline(engine), [])
   check(result.note.includes('unavailable') && result.hits.length === 0, 'Upload fallback is explicit without a worker')
-  return 'Titles, rollback, undo/redo, rotate, zoom, crossfades, shortcuts and upload fallback passed'
+  return 'Titles, rollback, undo/redo, rotate, zoom, motion, crossfades, shortcuts and upload fallback passed'
 }

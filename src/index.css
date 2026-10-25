@@ -805,6 +805,54 @@ input[type='range'] {
   background: #393939;
   color: #fff;
 }
+.clip-motion {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.clip-motion-heading {
+  color: #777;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.clip-motion-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 6px;
+  align-items: end;
+}
+.clip-motion-row > span {
+  grid-column: 1 / -1;
+  color: #aaa;
+  font-size: 11px;
+}
+.clip-motion-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #777;
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.clip-motion-row input {
+  width: 100%;
+}
+.clip-motion-row button {
+  height: 29px;
+  padding: 0 8px;
+  border: 1px solid #3b3b3b;
+  border-radius: 4px;
+  background: #242424;
+  color: #ddd;
+  font-size: 10px;
+}
+.clip-motion-row button:hover {
+  background: #393939;
+  color: #fff;
+}
 .panel-action {
   display: flex;
   align-items: center;
