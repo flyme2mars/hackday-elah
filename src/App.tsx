@@ -41,7 +41,8 @@ import FloatingPanel, { type PanelAnchor } from './FloatingPanel.tsx'
 import TransitionPanel from './TransitionPanel.tsx'
 import { getSelectedClipIds, selectSplitResults } from './host/selection.ts'
 import { usePreviewOverlayBounds } from './host/usePreviewOverlayBounds.ts'
-import CommandBar from './CommandBar.tsx'
+import CommandBar, { type VoiceControl } from './CommandBar.tsx'
+import { useDictation } from './host/useDictation.ts'
 import MediaPanel from './MediaPanel.tsx'
 import {
   applyOps,
@@ -117,6 +118,14 @@ function EditorShell() {
   const [command, setCommand] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
+  const dictation = useDictation({ value: command, busy, onChange: setCommand })
+  const voice: VoiceControl = dictation.unavailable
+    ? { state: 'unavailable' }
+    : dictation.mode === 'listening'
+      ? { state: 'listening', onStop: dictation.halt }
+      : dictation.mode === 'denied'
+        ? { state: 'denied', onRetry: dictation.toggle }
+        : { state: 'idle', onStart: dictation.toggle }
   const [menu, setMenu] = useState<{
     anchor: PanelAnchor
     clipId: string
@@ -627,8 +636,11 @@ function EditorShell() {
         busy={busy}
         status={status}
         onChange={setCommand}
-        onSubmit={() => void onSubmit()}
-        voice={{ state: 'unavailable' }}
+        onSubmit={() => {
+          dictation.halt()
+          void onSubmit()
+        }}
+        voice={voice}
       />
       {debug && <DebugSnapshot />}
     </div>
