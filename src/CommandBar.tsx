@@ -1,3 +1,5 @@
+import { ArrowUp, Command, Loader2 } from 'lucide-react'
+
 interface CommandBarProps {
   value: string
   busy: boolean
@@ -6,21 +8,35 @@ interface CommandBarProps {
   onSubmit: () => void
 }
 
-export default function CommandBar({ value, busy, status, onChange, onSubmit }: CommandBarProps) {
+export default function CommandBar({
+  value,
+  busy,
+  status,
+  onChange,
+  onSubmit,
+}: CommandBarProps) {
   return (
     <form
       className="command"
+      aria-busy={busy}
       onSubmit={(event) => {
         event.preventDefault()
         onSubmit()
       }}
     >
       <div className="command-row">
+        <span className="command-symbol" aria-hidden="true">
+          {busy ? (
+            <Loader2 size={17} className="spin" />
+          ) : (
+            <Command size={17} />
+          )}
+        </span>
         <textarea
           className="command-input"
-          rows={2}
+          rows={1}
           value={value}
-          placeholder="Ask for an edit"
+          placeholder="Describe your edit…"
           aria-label="Agent command"
           disabled={busy}
           onChange={(event) => onChange(event.target.value)}
@@ -31,13 +47,23 @@ export default function CommandBar({ value, busy, status, onChange, onSubmit }: 
             }
           }}
         />
-        <button type="submit" className="btn btn-primary" disabled={busy || value.trim() === ''}>
-          Send
+        <button
+          type="submit"
+          className="btn btn-primary"
+          disabled={busy || value.trim() === ''}
+        >
+          <ArrowUp size={17} />
+          <span className="sr-only">Send</span>
         </button>
       </div>
-      <p className="status" role="status">
-        {status}
-      </p>
+      <div className="command-footer">
+        <p className="status" role="status">
+          {status || 'Ready'}
+        </p>
+        <span className="command-hint">
+          Enter to apply <span>·</span> Shift + Enter for a new line
+        </span>
+      </div>
     </form>
   )
 }

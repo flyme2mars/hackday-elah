@@ -1,4 +1,11 @@
 import { useRef } from 'react'
+import {
+  Plus,
+  Film,
+  AudioLines,
+  Image as ImageIcon,
+  FolderOpen,
+} from 'lucide-react'
 import type { LibraryAsset, LibraryKind } from './host/library.ts'
 import { writeMediaDrag } from './host/media.ts'
 
@@ -33,9 +40,17 @@ export default function MediaPanel({
   return (
     <aside className="media" aria-label="Media">
       <div className="media-head">
-        <h1>Media</h1>
-        <button type="button" className="btn upload-btn" onClick={() => inputRef.current?.click()}>
-          Upload media
+        <div className="media-title">
+          <h1>Media</h1>
+          <span className="item-count">{library.length}</span>
+          <FolderOpen size={14} aria-hidden="true" />
+        </div>
+        <button
+          type="button"
+          className="btn upload-btn"
+          onClick={() => inputRef.current?.click()}
+        >
+          <Plus size={15} /> Import media
         </button>
         <input
           ref={inputRef}
@@ -52,8 +67,23 @@ export default function MediaPanel({
       </div>
       <div className="media-body">
         <section className="media-library" aria-label="Library">
-          <h2>Library</h2>
-          {libraryReady && library.length === 0 && <p className="quiet">None</p>}
+          <h2>
+            Library <span>All assets</span>
+          </h2>
+          {!libraryReady && (
+            <div className="media-loading" role="status">
+              <span />
+              <span />
+              <p>Loading library…</p>
+            </div>
+          )}
+          {libraryReady && library.length === 0 && (
+            <div className="media-empty">
+              <FolderOpen size={25} strokeWidth={1} />
+              <p>Your library is empty</p>
+              <span>Import video, audio or images.</span>
+            </div>
+          )}
           <KindSections
             items={library}
             readyIds={readyIds}
@@ -61,10 +91,21 @@ export default function MediaPanel({
             onPrepare={onPrepare}
           />
         </section>
-        {hits && (
+        {results !== null && (
           <section className="media-search" aria-label="Search">
-            <h2>Search</h2>
-            <KindSections items={hits} readyIds={readyIds} onPlace={onPlace} onPrepare={onPrepare} />
+            <h2>
+              Search <span>{hits?.length ?? 0} results</span>
+            </h2>
+            {hits ? (
+              <KindSections
+                items={hits}
+                readyIds={readyIds}
+                onPlace={onPlace}
+                onPrepare={onPrepare}
+              />
+            ) : (
+              <p className="quiet">No matches in the library.</p>
+            )}
           </section>
         )}
       </div>
@@ -90,7 +131,17 @@ function KindSections({
         if (visible.length === 0) return null
         return (
           <div key={entry.kind} className="kind-block">
-            <h3>{entry.label}</h3>
+            <h3>
+              {entry.kind === 'video' ? (
+                <Film size={12} />
+              ) : entry.kind === 'audio' ? (
+                <AudioLines size={12} />
+              ) : (
+                <ImageIcon size={12} />
+              )}
+              {entry.label}
+              <span>{visible.length}</span>
+            </h3>
             <div className="kind-row">
               {visible.map((item) => (
                 <button
@@ -115,7 +166,9 @@ function KindSections({
                       {item.name}
                     </span>
                     {item.durationSec !== null && (
-                      <span className="hit-meta">{formatDuration(item.durationSec)}</span>
+                      <span className="hit-meta">
+                        {formatDuration(item.durationSec)}
+                      </span>
                     )}
                   </span>
                 </button>
@@ -161,7 +214,7 @@ function Thumb({ item }: { item: LibraryAsset }) {
   }
   return (
     <span className="thumb thumb-audio" aria-hidden="true">
-      <span />
+      <AudioLines size={30} strokeWidth={1} />
     </span>
   )
 }
