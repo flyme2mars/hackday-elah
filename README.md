@@ -56,6 +56,8 @@ gcloud auth application-default login
 
 That writes `~/.config/gcloud/application_default_credentials.json`. Point `GOOGLE_APPLICATION_CREDENTIALS` at the file if it lives somewhere else. Restart the worker after login.
 
+DigitalOcean Inference is the first planner when `DO_MODEL_KEY` is set. It calls serverless Gemma 4 (`gemma-4-31B-it` by default) with OpenAI-compatible chat completions at `SENSE_DO_URL` (default `https://inference.do-ai.run/v1/chat/completions`). Keep the key in gitignored `.do.env`. `SENSE_DO=0` skips it. HTTP 401, 402, 403, 429, and 503 fall through to Gemini, then Vertex, then local E4B. `GET /health` reports `do_configured` and `do_model` and does not echo the key. The command result names this planner `do`.
+
 `SENSE_GEMINI=0` skips the Gemini API. `SENSE_VERTEX=0` skips Vertex. Local E4B is `SENSE_E4B_URL` (default `http://127.0.0.1:8787/v1/chat/completions`). Tool schemas match the Gemini and Vertex declarations. See [sense/README.md](sense/README.md) for the MLX routes, vault index files, and phase-swap notes. Variable names are in [.env.example](.env.example).
 
 ## Verify
@@ -89,7 +91,7 @@ The worker does not invent ids.
 - A `vault_index_*.json` under `~/HackDayVault` supplies ids, or a scan uses the file path relative to the vault.
 - `vault_index_*.npz` is used only when it has an id array and an embedding matrix that line up. `GET /health` reports `npz_keys` and `npz_error`.
 - Query embeddings and Parakeet come from the MLX worker. If that worker is down, search matches names and the status line says embeddings are offline. Cosine scores are not faked.
-- If Gemini, Vertex, and local E4B are all unavailable, `planner` is `offline`, `ops` stays empty, and the status line says the planner is not loaded. No edit ops are synthesized.
+- If DigitalOcean, Gemini, Vertex, and local E4B are all unavailable, `planner` is `offline`, `ops` stays empty, and the status line says the planner is not loaded. No edit ops are synthesized.
 - If the vault is missing or empty, the panel shows three files from `public/samples` as ordinary library items: Flower (`flower.mp4`), Bunny (`bunny.mp4`), Bed (`bed.m4a`). They are not added when the vault has its own catalog.
 
 Sample sources:

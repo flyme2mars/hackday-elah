@@ -1,4 +1,4 @@
-"""Tool loop. Gemini API, then Vertex MaaS, then local E4B. No invented edits when all are down."""
+"""Tool loop. DigitalOcean Gemma when a key exists, then Gemini, then Vertex, then local E4B. No invented edits."""
 
 from __future__ import annotations
 
@@ -172,6 +172,8 @@ def health(catalog: Catalog) -> dict[str, Any]:
         "vertex_project": os.environ.get("GOOGLE_CLOUD_PROJECT", "hackathon1-512618"),
         "vertex_model": os.environ.get("VERTEX_MODEL", "gemma-4-26b-a4b-it-maas"),
         "vertex_credentials": adc_present(),
+        "do_configured": do_configured(),
+        "do_model": _do_model(),
         "gemini_configured": gemini_configured(),
         "gemini_model": _gemini_model(),
         "mlx_url": mlx_origin(),
@@ -486,6 +488,8 @@ def _content_text(content: object) -> str:
 
 
 def _planner_name(planner: object) -> str:
+    if planner is _do_turn:
+        return "do"
     if planner is _gemini_turn:
         return "gemini"
     if planner is _vertex_turn:
@@ -496,7 +500,14 @@ def _planner_name(planner: object) -> str:
 
 
 def _after_busy(planner: object) -> tuple[object | None, str]:
-    """Gemini 402/429/503 tries Vertex, then local E4B. Vertex 429/503 tries E4B."""
+    """DigitalOcean 401/402/403/429/503 tries Gemini, then Vertex, then local E4B.
+    Gemini 402/429/503 tries Vertex, then local E4B. Vertex 429/503 tries E4B."""
+    if planner is _do_turn:
+        if _gemini_enabled():
+            return _gemini_turn, "DigitalOcean busy; trying Gemini."
+        if _vertex_enabled():
+            return _vertex_turn, "DigitalOcean busy; trying Vertex."
+        return _e4b_turn, "DigitalOcean busy; using local E4B."
     if planner is _gemini_turn:
         if _vertex_enabled():
             return _vertex_turn, "Gemini API busy; trying Vertex."
@@ -507,6 +518,8 @@ def _after_busy(planner: object) -> tuple[object | None, str]:
 
 
 async def _choose_planner():
+    if _do_enabled():
+        return _do_turn
     if _gemini_enabled():
         return _gemini_turn
     if _vertex_enabled():
@@ -569,19 +582,18 @@ async def _vertex_turn(contents: list[dict[str, Any]], messages: list[dict[str, 
     return _absorb_generate_content(response.json(), contents), contents, messages
 
 
-async def _e4b_turn(contents: list[dict[str, Any]], messages: list[dict[str, Any]]):
-    payload = {
-        "model": os.environ.get("SENSE_E4B_MODEL", "gemma-e4b"),
+def _openai_chat_body(model: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "model": model,
         "messages": messages,
         "tools": [{"type": "function", "function": tool} for tool in TOOLS],
         "tool_choice": "auto",
         "temperature": 0.2,
     }
-    async with httpx.AsyncClient(timeout=90) as client:
-        response = await client.post(e4b_url(), json=payload)
-    if response.status_code >= 400:
-        raise RuntimeError(f"Local model returned {response.status_code}.")
-    data = response.json()
+
+
+def _absorb_openai_message(data: dict[str, Any], messages: list[dict[str, Any]]) -> list[Call]:
+    """Read an OpenAI chat completion into the same tool calls the Gemini loop uses."""
     choice = (data.get("choices") or [{}])[0]
     message = dict(choice.get("message") or {})
     calls: list[Call] = []
@@ -604,7 +616,37 @@ async def _e4b_turn(contents: list[dict[str, Any]], messages: list[dict[str, Any
             ]
             message["content"] = None
     messages.append(message)
-    return calls, contents, messages
+    return calls
+
+
+_DO_BUSY = frozenset({401, 402, 403, 429, 503})
+
+
+async def _do_turn(contents: list[dict[str, Any]], messages: list[dict[str, Any]]):
+    key = _do_api_key()
+    if not key:
+        raise RuntimeError("DigitalOcean model key is not configured.")
+    async with httpx.AsyncClient(timeout=90) as client:
+        response = await client.post(
+            do_url(),
+            headers={"Authorization": f"Bearer {key}"},
+            json=_openai_chat_body(_do_model(), messages),
+        )
+    # 401/403 auth, 402 billing, 429/503 capacity. Same fall-through as a busy Gemini call.
+    if response.status_code in _DO_BUSY:
+        raise VertexBusy(f"DigitalOcean returned {response.status_code}.")
+    if response.status_code >= 400:
+        raise RuntimeError(f"DigitalOcean returned {response.status_code}.")
+    return _absorb_openai_message(response.json(), messages), contents, messages
+
+
+async def _e4b_turn(contents: list[dict[str, Any]], messages: list[dict[str, Any]]):
+    payload = _openai_chat_body(os.environ.get("SENSE_E4B_MODEL", "gemma-e4b"), messages)
+    async with httpx.AsyncClient(timeout=90) as client:
+        response = await client.post(e4b_url(), json=payload)
+    if response.status_code >= 400:
+        raise RuntimeError(f"Local model returned {response.status_code}.")
+    return _absorb_openai_message(response.json(), messages), contents, messages
 
 
 async def _execute(state: TurnState, call: Call) -> tuple[dict[str, Any], bytes | None]:
@@ -812,7 +854,7 @@ async def search_only(catalog: Catalog, body: dict[str, Any]) -> dict[str, Any]:
 
 
 class VertexBusy(RuntimeError):
-    """Gemini API or Vertex Gemma is out of capacity (HTTP 429 or 503)."""
+    """A cloud planner should fall through: DigitalOcean auth or capacity, or Gemini/Vertex 402/429/503."""
 
 
 class OpError(Exception):
@@ -988,6 +1030,30 @@ def gemini_configured() -> bool:
 
 def _gemini_enabled() -> bool:
     return os.environ.get("SENSE_GEMINI", "1") != "0" and gemini_configured()
+
+
+def _do_model() -> str:
+    model = os.environ.get("SENSE_DO_MODEL", "gemma-4-31B-it").strip()
+    return model or "gemma-4-31B-it"
+
+
+def do_url() -> str:
+    url = os.environ.get("SENSE_DO_URL", "").strip()
+    return url or "https://inference.do-ai.run/v1/chat/completions"
+
+
+def _do_api_key() -> str | None:
+    value = os.environ.get("DO_MODEL_KEY", "").strip()
+    return value or None
+
+
+def do_configured() -> bool:
+    """True when DO_MODEL_KEY is set. The key itself is never returned."""
+    return _do_api_key() is not None
+
+
+def _do_enabled() -> bool:
+    return os.environ.get("SENSE_DO", "1") != "0" and do_configured()
 
 
 def _vertex_enabled() -> bool:
