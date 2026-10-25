@@ -574,16 +574,6 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("clip_id", result["ops"][0])
         self.assertEqual(result["ops"][1]["clip_id"], "c1")
 
-
-def _rotation(clip_id, seconds=10.0):
-    return {
-        "op": "set_motion",
-        "clip_id": clip_id,
-        "property": "rotation",
-        "keys": [{"t_s": 0.0, "value": 0.0}, {"t_s": float(seconds), "value": 360.0}],
-    }
-
-
     def test_invented_layout_names_become_set_transform(self):
         timeline = _clip_timeline(scale=2, x=0.4, y=0.7)
         larger = validate_ops([{"op": "scale", "clip_id": "c1", "scale": "larger"}], set(), timeline)
@@ -743,6 +733,15 @@ def _rotation(clip_id, seconds=10.0):
         self.assertEqual(ops[1], {"op": "remove", "clip_id": ops[0]["left_id"]})
         self.assertNotIn("right_id", ops[0])
 
+
+
+def _rotation(clip_id, seconds=10.0):
+    return {
+        "op": "set_motion",
+        "clip_id": clip_id,
+        "property": "rotation",
+        "keys": [{"t_s": 0.0, "value": 0.0}, {"t_s": float(seconds), "value": 360.0}],
+    }
 
 
 def _spinning_timeline():
