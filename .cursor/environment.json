@@ -1,0 +1,4 @@
+{
+  "name": "hackday-elah",
+  "install": "npm ci && python3 -m venv .venv && .venv/bin/python -m pip install -r sense/requirements.txt"
+}
