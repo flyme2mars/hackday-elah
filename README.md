@@ -167,8 +167,9 @@ Seconds in, frames at the edge: `Math.round(seconds * fps)`. Track names are V1,
 | `set_volume` | `updateClip({ volume })`, clip gain 0 to 1 |
 | `update_text` | flat content/style fields and optional start/duration |
 | `crossfade` | `addTransition({ kind: 'fade' })` between adjacent video clips |
+| `set_transform` | `setClipRotation` with absolute degrees, stored as radians |
 
-`clip_id` is a host alias so later ops can name a clip created in the same batch. `vault_id` must already be on the timeline or returned by search or similar. The planner may also emit `set_transform` with `rotation` in degrees. The host rejects that op, and the status line says to rotate from the clip menu. Elah stores `transform.rotation` in radians.
+`clip_id` is a host alias so later ops can name a clip created in the same batch. `vault_id` must already be on the timeline or returned by search or similar. `set_transform` `rotation` is degrees clockwise. The host converts it to radians and applies it in the same undo step. Elah stores `transform.rotation` in radians.
 
 ## Elah notes
 

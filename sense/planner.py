@@ -18,7 +18,7 @@ import httpx
 from sense.catalog import Catalog, Item
 from sense.retrieve import cosine, lexical
 
-INSTRUCTIONS = """You edit a timeline by calling tools. For trim, move, remove, rotate, volume, text, or other edits on clips already on the timeline, call apply_ops right away. Do not call search_vault for those. Search the library only when the user asks to find footage or before you place new media that is not already on the timeline. Prefer vault_id values from search_vault or similar. You may also use a vault_id the user typed if it is in the library. Do not invent ids.
+INSTRUCTIONS = """You edit a timeline by calling tools. For trim, split, cut, move, remove, rotate, volume, text, crossfade, or other edits on clips already on the timeline, call apply_ops right away. Do not call search_vault for those. Search the library only when the user asks to find footage, or before you place new media that is not already on the timeline. After that search, place the clip with add_clip. Prefer vault_id values from search_vault or similar. You may also use a vault_id the user typed if it is in the library. Do not invent ids.
 
 V1 and V2 take video. A1 takes audio. T1 takes text through add_text. Track names are the strings V1, V2, A1, T1. Never use numbers for tracks.
 
@@ -31,6 +31,7 @@ Allowed ops (exact names):
 - {"op":"add_text","content":"Hello","track":"T1","start_s":0,"duration_s":2}
 - {"op":"set_stage","width":1080,"height":1920}
 - {"op":"trim","clip_id":"...","duration_s":2}
+- {"op":"split","clip_id":"...","at_s":1}
 - {"op":"move","clip_id":"...","track":"V1","start_s":1}
 - {"op":"remove","clip_id":"..."}
 - {"op":"set_volume","clip_id":"...","volume":0.8}
@@ -38,7 +39,9 @@ Allowed ops (exact names):
 - {"op":"crossfade","from_clip_id":"...","to_clip_id":"...","duration_s":0.5}
 - {"op":"set_transform","clip_id":"...","rotation":180}
 
-set_transform rotation is degrees clockwise. 180 turns the picture upside down. Use it only when the user asked to rotate.
+set_transform rotation is an absolute angle in degrees clockwise. The host stores radians. 180 turns the picture upside down. Use it only when the user asked to rotate.
+
+When the prompt lists Selected clip_ids, those clips are selected. Prefer those ids for trim, set_transform, remove, and split. Cut means split. at_s is seconds on the timeline.
 
 When trimming to a new length, send duration_s only. Omit start_s unless the user asked to move the left edge.
 
@@ -55,7 +58,7 @@ The user does not see your prose. They see the library and the timeline."""
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_vault",
-        "description": "Search the library by meaning or, if embeddings are offline, by name. Returns real vault ids.",
+        "description": "Find footage in the library by meaning or, if embeddings are offline, by name. Returns real vault ids. Do not use this to trim, split, cut, move, remove, rotate, change volume, edit text, or crossfade. To place new media, search first, then add_clip.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -111,7 +114,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_ops",
-        "description": "Queue timeline edits for the host as one undo step. Media uses add_clip with V1/V2/A1 and a real vault_id. Titles use add_text on T1 with content, start_s, duration_s; update_text changes content, timing or style by clip_id; remove deletes by clip_id. Never invent op names.",
+        "description": "Queue timeline edits for the host as one undo step. Call this for trim, split, move, remove, set_volume, add_text, update_text, crossfade, set_transform, and add_clip. set_transform rotation is degrees. Titles use add_text on T1. Never invent op names.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -144,6 +147,9 @@ class TurnState:
     duration_by_id: dict[str, float]
     allow: set[str]
     timeline: dict[str, Any]
+    command: str = ""
+    selected_clip_ids: list[str] = field(default_factory=list)
+    edit_errors: list[str] = field(default_factory=list)
     hits: list[Item] = field(default_factory=list)
     scores: dict[str, float] = field(default_factory=dict)
     ops: list[dict[str, Any]] = field(default_factory=list)
@@ -205,8 +211,12 @@ async def run_command(catalog: Catalog, body: dict[str, Any]) -> dict[str, Any]:
     if len(command) > 2000:
         command = command[:2000]
     state = _state_from(catalog, body)
+    state.command = command
+    state.selected_clip_ids = _selected_ids(body)
     planner = await _choose_planner()
     if planner is None:
+        if _blocks_search(command):
+            return _result("Planner not loaded. No edits were applied.", [], [], None, "offline")
         found, mode = await _search(state, command, None, 8)
         _take_hits(state, found, mode)
         return _result(_offline_note(catalog, mode, bool(found)), state.hits, [], None, "offline", state)
@@ -261,6 +271,16 @@ async def run_command(catalog: Catalog, body: dict[str, Any]) -> dict[str, Any]:
                 })
     except Exception as error:
         state.notes.append(_short(error))
+    if state.ops:
+        state.edit_errors.clear()
+    elif state.edit_errors or _blocks_search(command):
+        state.hits.clear()
+        state.scores.clear()
+        name_note = _name_note(state.catalog)
+        state.notes = [note for note in state.notes if note != name_note]
+        for error in state.edit_errors:
+            if error not in state.notes:
+                state.notes.append(error)
     if not state.hits and not state.ops and _wants_search_fallback(command):
         found, mode = await _search(state, command, None, 8)
         _take_hits(state, found, mode)
@@ -392,7 +412,11 @@ def _prompt(state: TurnState, command: str) -> str:
         extra = f"\n{len(state.corpus) - 30} more. Use search_vault."
     library = "\n".join(lines) if lines else "Library is empty."
     timeline = json.dumps(_compact_timeline(state.timeline), ensure_ascii=True)
-    return f"Library:\n{library}{extra}\n\nTimeline:\n{timeline}\n\nCommand: {command}"
+    selected = ""
+    if state.selected_clip_ids:
+        joined = ", ".join(state.selected_clip_ids)
+        selected = f"\nSelected clip_ids: {joined}. Prefer these ids for trim, rotate, remove, and split."
+    return f"Library:\n{library}{extra}\n\nTimeline:\n{timeline}{selected}\n\nCommand: {command}"
 
 
 def _compact_timeline(timeline: dict[str, Any]) -> dict[str, Any]:
@@ -404,7 +428,7 @@ def _compact_timeline(timeline: dict[str, Any]) -> dict[str, Any]:
         for clip in track.get("clips") or []:
             if not isinstance(clip, dict):
                 continue
-            clips.append({
+            row = {
                 "id": clip.get("alias") or clip.get("id"),
                 "vault_id": clip.get("vault_id"),
                 "type": clip.get("type"),
@@ -412,7 +436,11 @@ def _compact_timeline(timeline: dict[str, Any]) -> dict[str, Any]:
                 "start_s": clip.get("start_s"),
                 "duration_s": clip.get("duration_s"),
                 "content": clip.get("content"),
-            })
+            }
+            rotation = clip.get("rotation_deg")
+            if isinstance(rotation, (int, float)) and not isinstance(rotation, bool):
+                row["rotation_deg"] = rotation
+            clips.append(row)
         tracks.append({"track": track.get("alias") or track.get("name"), "kind": track.get("kind"), "clips": clips})
     return {"stage": timeline.get("stage"), "duration_s": timeline.get("duration_s"), "tracks": tracks}
 
@@ -661,6 +689,8 @@ async def _execute(state: TurnState, call: Call) -> tuple[dict[str, Any], bytes 
     args = call.args
     try:
         if name == "search_vault":
+            if _blocks_search(state.command):
+                return {"error": "This edits the timeline. Call apply_ops and do not search."}, None
             found, mode = await _search(state, str(args.get("query") or ""), _modality(args.get("modality")), _k(args.get("k")))
             _take_hits(state, found, mode)
             return {"mode": mode, "hits": [_model_hit(state, item) for item in found]}, None
@@ -675,14 +705,17 @@ async def _execute(state: TurnState, call: Call) -> tuple[dict[str, Any], bytes 
         if name == "transcribe":
             return await _transcribe(state, str(args.get("vault_id") or ""), args.get("start_s"), args.get("end_s")), None
         if name == "apply_ops":
-            ops = validate_ops(args.get("ops"), state.allow)
+            ops = _prefer_selection(validate_ops(args.get("ops"), state.allow), state.selected_clip_ids)
             label = args.get("label")
             state.ops = ops
             state.label = label.strip()[:80] if isinstance(label, str) and label.strip() else "Edit"
             return {"ok": True, "op_count": len(ops), "label": state.label}, None
         return {"error": f"Unknown tool {name}."}, None
     except OpError as error:
-        state.notes.append(str(error))
+        if name == "apply_ops":
+            state.edit_errors.append(str(error))
+        else:
+            state.notes.append(str(error))
         return {"error": str(error)}, None
     except Exception as error:
         state.notes.append(_short(error))
@@ -987,17 +1020,81 @@ def _copy_optional(raw: dict[str, Any], op: dict[str, Any], numbers: tuple[str, 
 
 
 
-def _wants_search_fallback(command: str) -> bool:
-    """Only auto-search when the user asked to find footage, not after a failed edit."""
+_EDIT_TOKENS = (
+    "trim", "cut", "split", "move", "remove", "delete", "rotate", "volume",
+    "mute", "text", "title", "caption", "subtitle", "export", "fade", "crossfade", "speed", "zoom",
+)
+_FIND_TOKENS = ("find", "search", "look for", "show me", "footage", "clip of", "video of")
+_SELECTION_OPS = frozenset({"trim", "set_transform", "remove", "split"})
+_PLACE_RE = re.compile(r"\b(?:place|put|drop|insert)\b|\badd\b(?!\s+(?:a\s+)?(?:title|text|caption|subtitle)s?\b)")
+
+
+def _has_token(text: str, token: str) -> bool:
+    if " " in token:
+        return token in text
+    return re.search(rf"\b{re.escape(token)}\b", text) is not None
+
+
+def _has_any(text: str, tokens: tuple[str, ...]) -> bool:
+    return any(_has_token(text, token) for token in tokens)
+
+
+def _wants_place(text: str) -> bool:
+    return _PLACE_RE.search(text) is not None
+
+
+def _blocks_search(command: str) -> bool:
     text = command.lower()
-    edit_words = (
-        "trim", "cut", "split", "move", "remove", "delete", "rotate", "volume",
-        "mute", "text", "title", "export", "fade", "crossfade", "speed", "zoom",
-    )
-    if any(word in text for word in edit_words):
+    if _wants_place(text) or _has_any(text, _FIND_TOKENS):
         return False
-    find_words = ("find", "search", "look for", "show me", "footage", "clip of", "video of")
-    return any(word in text for word in find_words)
+    return _has_any(text, _EDIT_TOKENS)
+
+
+def _wants_search_fallback(command: str) -> bool:
+    text = command.lower()
+    if _has_any(text, _EDIT_TOKENS):
+        return False
+    return _has_any(text, _FIND_TOKENS)
+
+
+def _selected_ids(body: dict[str, Any]) -> list[str]:
+    raw = body.get("selected_clip_ids")
+    if not isinstance(raw, list):
+        return []
+    ids: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        clip_id = item.strip()
+        if clip_id and clip_id not in ids:
+            ids.append(clip_id)
+        if len(ids) == 40:
+            break
+    return ids
+
+
+def _prefer_selection(ops: list[dict[str, Any]], selected: list[str]) -> list[dict[str, Any]]:
+    if not selected:
+        return ops
+    chosen = set(selected)
+    rewritten: list[dict[str, Any]] = []
+    for op in ops:
+        name = op.get("op")
+        clip_id = op.get("clip_id")
+        if name not in _SELECTION_OPS or not isinstance(clip_id, str) or clip_id in chosen:
+            rewritten.append(op)
+            continue
+        for target in selected:
+            rewritten.append({**op, "clip_id": target})
+    unique: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for op in rewritten:
+        key = json.dumps(op, sort_keys=True, separators=(",", ":"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(op)
+    return unique
 
 
 def _req_str(raw: dict[str, Any], key: str) -> str:
