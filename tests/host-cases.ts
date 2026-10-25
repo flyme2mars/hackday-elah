@@ -381,5 +381,23 @@ export async function runHostCases() {
   check(stillEngine.findClip(roomy.id)?.clip.sourceDurationFrames === 600, 'Extending motion does not invent video media')
   check(stillEngine.undo() && stillEngine.findClip(roomy.id)?.clip.durationFrames === 60, 'Undo restores the video out-point')
 
+  const titleEngine = new TimelineEngine({ fps: 30, initialTracks: [
+    { name: 'V1', kind: 'video' },
+    { name: 'T1', kind: 'elements' },
+  ] })
+  await applyOps(titleEngine, coerceOps([
+    { op: 'add_text', clip_id: 'text_hello_world', content: 'Hello World', track: 'T1', start_s: 0, duration_s: 2 },
+    { op: 'set_motion', clip_id: 'text_hello_world', property: 'rotation', from: 0, to: 360, duration_s: 10 },
+  ]), 'Spin the title')
+  const titleClips = getTimeline(titleEngine).tracks.find((track) => track.alias === 'T1')?.clips ?? []
+  check(titleClips.length === 1, 'Hello World is one text clip')
+  const hello = titleClips[0]
+  check(hello?.content === 'Hello World' && hello.start_s === 0 && hello.alias === 'text_hello_world', 'Hello World sits at the start under its alias')
+  check((hello?.duration_s ?? 0) >= 10, 'The title lasts for the ten second rotation')
+  check(hello?.motion?.rotation?.[0]?.value === 0 && hello?.motion?.rotation?.[1]?.t_s === 10 && hello?.motion?.rotation?.[1]?.value === 360, 'The title rotation runs for ten seconds')
+  const midTitle = resolveTimeline(150, titleEngine.getProject()).texts.find((text) => text.content === 'Hello World')
+  check(midTitle !== undefined, 'The title is on screen five seconds in')
+  check(Math.abs((midTitle?.transform?.rotation ?? 0) - Math.PI) < 1e-6, 'The title is halfway through a full turn at five seconds')
+
   return 'Titles, rollback, undo/redo, rotate, zoom, motion, still extend, crossfades, shortcuts, split fan-out and upload fallback passed'
 }
