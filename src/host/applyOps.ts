@@ -6,7 +6,7 @@ import {
 import { importLibraryMedia } from './media.ts'
 import { getLibraryAsset, vaultIdForSrc } from './library.ts'
 import { clearedMotionPatch, motionForSnapshot, type HostMotion } from './motion.ts'
-import { measureClipForRotation, setClipMotion, setClipTransform, wrapDegrees } from './rotate.ts'
+import { measureClipForRotation, setClipMotion, setClipTransform, widenImageSource, wrapDegrees } from './rotate.ts'
 import { opsForSplitParents, type SplitPair } from './splitFollow.ts'
 import {
   frameCountToSeconds,
@@ -336,6 +336,10 @@ function applyOne(
         op.duration_s === undefined
           ? before.durationFrames
           : Math.max(1, secondsToFrameCount(op.duration_s, fps))
+      // Stills are placed with sourceDurationFrames equal to the timeline
+      // length (often a few seconds). Lengthen that window before trimClip,
+      // which otherwise clamps the still and reports a source-window error.
+      if (before.type === 'image') widenImageSource(engine, ref.id, durationFrames)
       engine.trimClip(ref.id, ref.trackId, startFrame, durationFrames)
       const after = mustClip(engine, ref.id)
       if (after.startFrame !== startFrame && op.duration_s === undefined) {
@@ -344,6 +348,11 @@ function applyOne(
         )
       }
       if (op.duration_s !== undefined && after.durationFrames !== durationFrames) {
+        if (before.type === 'image') {
+          throw new Error(
+            `trim left the still at ${after.durationFrames} frames. A neighbour occupies the longer range.`,
+          )
+        }
         throw new Error(
           `trim clamped the clip to ${after.durationFrames} frames. The source window is ${after.sourceDurationFrames} frames.`,
         )

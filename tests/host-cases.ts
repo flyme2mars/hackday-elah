@@ -287,5 +287,99 @@ export async function runHostCases() {
   ], 'Cut and remove both')
   check(getTimeline(splitEngine).tracks[0].clips.every((clip) => clip.start_s < 20), 'Split then remove drops both halves')
 
-  return 'Titles, rollback, undo/redo, rotate, zoom, motion, crossfades, shortcuts, split fan-out and upload fallback passed'
+  const stillEngine = new TimelineEngine({ fps: 30, initialTracks: [{ name: 'V1', kind: 'video' }] })
+  const stillTrack = stillEngine.getProject().tracks[0]
+  const photo = stillEngine.addClip({ type: 'image', trackId: stillTrack.id, src: '/photo.png', name: 'Photo', startFrame: 0, durationFrames: 72 })
+  check(photo.sourceDurationFrames === 72 && photo.durationFrames === 72, 'A placed still starts with a 72-frame source window')
+  await applyOps(stillEngine, coerceOps([{ op: 'set_transform', clip_id: photo.id, scale: 2 }]), 'Zoom still')
+  await applyOps(stillEngine, coerceOps([{ op: 'set_motion', clip_id: photo.id, property: 'rotation', from: 30, to: 90, duration_s: 2 }]), 'Rotate still for 2s')
+  const spunStill = stillEngine.findClip(photo.id)?.clip
+  check(spunStill?.durationFrames === 72 && spunStill.sourceDurationFrames === 72, 'A 2s spin fits inside the placed still')
+  check(spunStill?.transform?.scale === 2, 'The 2s spin keeps the zoom')
+  const spunKeys = getTimeline(stillEngine).tracks[0].clips[0]?.motion?.rotation
+  check(spunKeys?.[0]?.value === 30 && spunKeys?.[1]?.t_s === 2 && spunKeys?.[1]?.value === 90, 'The 2s spin stores the endpoints')
+  await applyOps(stillEngine, coerceOps([{ op: 'set_motion', clip_id: photo.id, property: 'rotation', from: 30, to: 90, duration_s: 8 }]), 'Extend rotation to 8s')
+  const extended = stillEngine.findClip(photo.id)?.clip
+  check(extended?.durationFrames === 240 && (extended?.sourceDurationFrames ?? 0) >= 240, 'The still stays up for the 8s rotation')
+  check(extended?.transform?.scale === 2, 'Extending the rotation keeps the zoom')
+  const extendedKeys = getTimeline(stillEngine).tracks[0].clips[0]?.motion?.rotation
+  check(extendedKeys?.[0]?.value === 30 && extendedKeys?.[1]?.t_s === 8 && extendedKeys?.[1]?.value === 90, 'The rotation span is 8 seconds')
+  const midStill = resolveTimeline(120, stillEngine.getProject()).images.find((image) => image.id === photo.id)
+  check(Math.abs((midStill?.transform?.rotation ?? 0) - (60 * Math.PI / 180)) < 1e-6, 'The extended rotation is halfway at 4 seconds')
+  check(Math.abs((stillEngine.findClip(photo.id)?.clip.transform?.rotation ?? 0) - (30 * Math.PI / 180)) < 1e-6, 'Sampling leaves the resting pose')
+  check(stillEngine.undo(), 'Undo the 8s extension')
+  const restored = stillEngine.findClip(photo.id)?.clip
+  check(restored?.durationFrames === 72 && restored.sourceDurationFrames === 72, 'Undo restores the 72-frame still')
+  const restoredKeys = getTimeline(stillEngine).tracks[0].clips[0]?.motion?.rotation
+  check(restoredKeys?.[1]?.t_s === 2 && restoredKeys?.[1]?.value === 90 && restored?.transform?.scale === 2, 'Undo restores the 2s rotation')
+  check(stillEngine.undo(), 'Undo the 2s rotation')
+  check(getTimeline(stillEngine).tracks[0].clips[0]?.motion?.rotation === undefined, 'The undo stack restores the still before the spin')
+  check(stillEngine.redo() && getTimeline(stillEngine).tracks[0].clips[0]?.motion?.rotation?.[1]?.t_s === 2, 'Redo restores the 2s spin')
+  check(stillEngine.redo() && stillEngine.findClip(photo.id)?.clip.durationFrames === 240, 'Redo restores the 8s still')
+
+  const historyPane = document.createElement('section')
+  historyPane.className = 'timeline-pane'
+  document.body.append(historyPane)
+  const historyKey = (value: string, options: KeyboardEventInit = {}) => {
+    const event = new KeyboardEvent('keydown', { key: value, cancelable: true, bubbles: true, ...options })
+    Object.defineProperty(event, 'target', { value: historyPane })
+    timelineShortcut(stillEngine, event)
+    return event
+  }
+  const undone = historyKey('z', { ctrlKey: true })
+  check(undone.defaultPrevented && stillEngine.findClip(photo.id)?.clip.durationFrames === 72, 'Ctrl+Z undoes the extension')
+  const redone = historyKey('z', { metaKey: true, shiftKey: true })
+  check(redone.defaultPrevented && stillEngine.findClip(photo.id)?.clip.durationFrames === 240, 'Cmd+Shift+Z redoes the extension')
+  historyKey('z', { ctrlKey: true })
+  const replayed = historyKey('y', { ctrlKey: true })
+  check(replayed.defaultPrevented && stillEngine.findClip(photo.id)?.clip.durationFrames === 240, 'Ctrl+Y redoes the extension')
+  historyPane.remove()
+
+  const typing = document.createElement('textarea')
+  typing.value = 'extend the rotation'
+  const typed = new KeyboardEvent('keydown', { key: 'z', cancelable: true, ctrlKey: true })
+  Object.defineProperty(typed, 'target', { value: typing })
+  timelineShortcut(stillEngine, typed)
+  check(!typed.defaultPrevented && stillEngine.findClip(photo.id)?.clip.durationFrames === 240, 'A filled command field keeps text undo')
+  typing.value = ''
+  const emptyUndo = new KeyboardEvent('keydown', { key: 'z', cancelable: true, metaKey: true })
+  Object.defineProperty(emptyUndo, 'target', { value: typing })
+  timelineShortcut(stillEngine, emptyUndo)
+  check(emptyUndo.defaultPrevented && stillEngine.findClip(photo.id)?.clip.durationFrames === 72, 'An empty command field undoes the timeline')
+  check(getTimeline(stillEngine).tracks[0].clips[0]?.motion?.rotation?.[1]?.t_s === 2, 'That undo restores the 2s rotation')
+
+  const trimmedStill = stillEngine.addClip({ type: 'image', trackId: stillTrack.id, src: '/photo.png', name: 'Second', startFrame: 300, durationFrames: 72 })
+  let stillTrimError = ''
+  try {
+    await applyOps(stillEngine, [{ op: 'trim', clip_id: trimmedStill.id, duration_s: 8 }], 'Lengthen still')
+  } catch (error) {
+    stillTrimError = String(error)
+  }
+  check(stillTrimError === '' && stillEngine.findClip(trimmedStill.id)?.clip.durationFrames === 240, `A still trim to 8s lengthens the timeline (${stillTrimError})`)
+  check((stillEngine.findClip(trimmedStill.id)?.clip.sourceDurationFrames ?? 0) >= 240, 'The still source window grows with the trim')
+  check(!stillTrimError.includes('source window'), 'A still trim does not report a source window')
+
+  const limited = stillEngine.addClip({ type: 'video', trackId: stillTrack.id, src: '/samples/flower.mp4', name: 'Short', startFrame: 600, durationFrames: 72 })
+  const beforeLimit = stillEngine.getProject()
+  let videoTrimError = ''
+  try {
+    await applyOps(stillEngine, [{ op: 'trim', clip_id: limited.id, duration_s: 8 }], 'Lengthen video')
+  } catch (error) {
+    videoTrimError = String(error)
+  }
+  check(videoTrimError.includes('source window') && stillEngine.getProject() === beforeLimit, 'A video trim still stops at the file')
+  await applyOps(stillEngine, coerceOps([{ op: 'set_motion', clip_id: limited.id, property: 'rotation', from: 0, to: 20, duration_s: 8 }]), 'Spin a short video')
+  check(stillEngine.findClip(limited.id)?.clip.durationFrames === 72, 'Motion on a short video does not pass the file')
+  check(getTimeline(stillEngine).tracks[0].clips.find((clip) => clip.id === limited.id)?.motion?.rotation?.[1]?.t_s === 8, 'The short video still stores the 8s keys')
+
+  const roomy = stillEngine.addClip({ type: 'video', trackId: stillTrack.id, src: '/samples/bunny.mp4', name: 'Roomy', startFrame: 900, durationFrames: 60 })
+  stillEngine.updateClip(roomy.id, stillTrack.id, { sourceDurationFrames: 600 })
+  await applyOps(stillEngine, coerceOps([{ op: 'set_motion', clip_id: roomy.id, property: 'rotation', from: 10, to: 40, duration_s: 2 }]), 'Spin inside the file')
+  check(stillEngine.findClip(roomy.id)?.clip.durationFrames === 60, 'A 2s spin leaves a longer source alone')
+  await applyOps(stillEngine, coerceOps([{ op: 'set_motion', clip_id: roomy.id, property: 'rotation', from: 10, to: 40, duration_s: 8 }]), 'Extend inside the file')
+  check(stillEngine.findClip(roomy.id)?.clip.durationFrames === 240, 'A video out-point grows when the file allows it')
+  check(stillEngine.findClip(roomy.id)?.clip.sourceDurationFrames === 600, 'Extending motion does not invent video media')
+  check(stillEngine.undo() && stillEngine.findClip(roomy.id)?.clip.durationFrames === 60, 'Undo restores the video out-point')
+
+  return 'Titles, rollback, undo/redo, rotate, zoom, motion, still extend, crossfades, shortcuts, split fan-out and upload fallback passed'
 }

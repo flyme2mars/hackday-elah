@@ -13,6 +13,7 @@ import {
   type MotionKey,
   type MotionProperty,
 } from './motion.ts'
+import { secondsToFrameCount } from './types.ts'
 
 /** Elah applies `transform.rotation` with sin/cos and canvas `rotate`, so the unit is radians. */
 const DEG_TO_RAD = Math.PI / 180
@@ -119,7 +120,35 @@ export function setClipMotion(
       ...(property === 'rotation' ? { rotation: first.value * DEG_TO_RAD } : { [property]: first.value }),
     }
   }
-  engine.updateClip(clip.id, found.trackId, patch as Partial<Clip>)
+  const end = sorted[sorted.length - 1]
+  engine.batch(() => {
+    engine.updateClip(clip.id, found.trackId, patch as Partial<Clip>)
+    if (end) lengthenClip(engine, clip.id, secondsToFrameCount(end.t, engine.getProject().fps))
+  }, 'Animate clip')
+}
+
+/**
+ * Images have no media file past the placed length. `trimClip` clamps them to
+ * `sourceDurationFrames`, so a longer animation has to raise that window first.
+ * Video and audio stay inside the file.
+ */
+export function widenImageSource(engine: TimelineEngine, clipId: string, durationFrames: number): void {
+  const found = engine.findClip(clipId)
+  if (!found || found.clip.type !== 'image') return
+  const clip = found.clip
+  if (durationFrames <= clip.durationFrames) return
+  const speed = clip.speed && clip.speed > 0 ? clip.speed : 1
+  const neededSource = Math.max(clip.sourceDurationFrames, Math.ceil(durationFrames * speed))
+  if (neededSource <= clip.sourceDurationFrames) return
+  engine.updateClip(clip.id, found.trackId, { sourceDurationFrames: neededSource })
+}
+
+export function lengthenClip(engine: TimelineEngine, clipId: string, durationFrames: number): void {
+  const found = engine.findClip(clipId)
+  if (!found || durationFrames <= found.clip.durationFrames) return
+  widenImageSource(engine, clipId, durationFrames)
+  const clip = engine.findClip(clipId)?.clip ?? found.clip
+  engine.trimClip(clip.id, found.trackId, clip.startFrame, durationFrames)
 }
 
 function touchedProperties(change: TransformChange): MotionProperty[] {
