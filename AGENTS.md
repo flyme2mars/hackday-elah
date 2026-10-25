@@ -134,3 +134,15 @@ python -m unittest sense/test_local_plan.py
 ## Elsewhere
 
 GitHub issues #1–#5 are separate slices: titles on T1, upload find-similar, a demo launcher, timeline shortcuts, and a crossfade. Leave them out of unrelated changes.
+
+## Cursor Project + poteto
+
+Hack Day cloud/local agents use this kit:
+
+- Skills live under `.agents/skills/` (pstack + vercel react/design). Prefer `/poteto-mode` for rigorous edits.
+- Model routing: `.cursor/rules/pstack-models.mdc` (medium budget). **Grok 4.7 non-fast only** (`grok-4.7-high`). Judgment/prose: `claude-opus-5-5-high`. Never append `-fast` to Grok.
+- Custom agents: `.cursor/agents/{verifier,explorer,sense-debugger}.md`.
+- User plugins (account-wide): pstack, Superpowers, React Doctor, Impeccable, Remotion, Vercel, GSAP.
+- Secrets stay gitignored (`.do.env`, `.gemini.env`). Never commit Model Access Keys.
+- Planner chain: DigitalOcean Gemma → Gemini API → Vertex → local E4B. Prefer edit ops over search for trim/move/rotate/cut.
+- Friend Codex works from GitHub issues; wait for Akshai before filing new issues.
