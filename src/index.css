@@ -441,22 +441,6 @@ p {
   color: #707070;
   font-size: 10px;
 }
-.media-loading {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-.media-loading > span {
-  height: 68px;
-  border-radius: 5px;
-  background: #222;
-  animation: breathe 1.5s ease infinite;
-}
-.media-loading > p {
-  grid-column: 1 / -1;
-  font-size: 10px;
-  color: #888;
-}
 .stage {
   grid-column: 2;
   grid-row: 2;
@@ -913,11 +897,6 @@ input[type='range'] {
 @keyframes spin {
   to {
     transform: rotate(360deg);
-  }
-}
-@keyframes breathe {
-  50% {
-    opacity: 0.45;
   }
 }
 @media (min-width: 1600px) {

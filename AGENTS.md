@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Map of this repo for someone changing it cold. The product brief is [plan.md](plan.md). Behavior below matches the code on `main`.
+Map of this repo for someone changing it cold. The product name is Frame Flow. The GitHub repo slug stays `hackday-elah`. Package paths such as `@elah/editor` stay as they are. The product brief is [plan.md](plan.md). Behavior below matches the code on `main`.
 
 ## Architecture
 
@@ -28,10 +28,10 @@ Vault: ~/HackDayVault   (SENSE_VAULT)
 | `src/host/applyOps.ts` | Applies `ops` on `TimelineEngine` as one undo step |
 | `src/host/exportMp4.ts`, `src/host/statusLine.ts` | MP4 export and status-line text |
 | `src/host/place.ts`, `rotate.ts`, `orient.ts` | Place, free-angle rotate, no auto upright flip |
-| `src/sense/client.ts` | `POST /api/v1/command`, `/api/similar`, `GET /api/library` |
+| `src/sense/client.ts` | `POST /api/v1/command` and `/api/similar`. The host does not call `GET /api/library` on boot. |
 | `sense/planner.py` | Tool loop and planner fallbacks |
 | `sense/catalog.py`, `sense/retrieve.py` | Vault index, search, similar |
-| `public/samples/` | Flower, Bunny, Bed when the vault catalog is empty |
+| `public/samples/` | Flower, Bunny, Bed for the worker when the vault catalog is empty. The panel does not show them on boot. |
 
 `npm run dev` is `vite --host 0.0.0.0 --port 43123 --strictPort`. `npm run sense` is uvicorn on `127.0.0.1:8765`. The proxy is in `vite.config.ts`: `/api` rewrites to the sense origin.
 
@@ -73,7 +73,7 @@ Host ops (`coerceOps` / `applyOps`): `set_stage`, `add_clip`, `add_text`, `trim`
 
 `needsUprightFlip` in `src/host/orient.ts` returns false. Do not auto-apply `scaleY = -1` on place.
 
-Find similar is the timeline context menu, then `POST /similar` with `vault_id`. `upload/*` ids are browser blobs. The worker returns a note and does not invent cosine scores. Empty vault: the panel shows `public/samples` (Flower `flower.mp4`, Bunny `bunny.mp4`, Bed `bed.m4a`).
+Find similar is the timeline context menu, then `POST /similar` with `vault_id`. `upload/*` ids are browser blobs. The worker returns a note and does not invent cosine scores. The Media panel starts empty. Upload, search, and find-similar are how media shows up. `search_vault` still reads the disk vault. When that vault is missing or empty, the worker can still search `public/samples` (Flower `flower.mp4`, Bunny `bunny.mp4`, Bed `bed.m4a`). Those files are not copied into the panel on boot.
 
 ## Product UI
 

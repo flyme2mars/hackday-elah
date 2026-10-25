@@ -1,6 +1,6 @@
-# Editor
+# Frame Flow
 
-A monochrome browser video editor. The media library sits on the left. Preview and the elah timeline sit on the right, with one command field under the timeline. There is no chat transcript.
+Frame Flow is a monochrome browser video editor. The GitHub repo slug stays `hackday-elah`. The media library sits on the left. Preview and the timeline sit on the right, with one command field under the timeline. There is no chat transcript. Package imports such as `@elah/editor` keep their names.
 
 Search, similar, frame grabs, and transcripts run in the sense worker. The planner tries DigitalOcean Gemma, then Gemini API Gemma, then Vertex MaaS, then local Gemma E4B. Timeline edits come back as `ops`. The host applies them with `applyOps` into `TimelineEngine`. See [AGENTS.md](AGENTS.md) for the contract.
 
@@ -141,7 +141,8 @@ The worker does not invent ids.
 - `vault_index_*.npz` is used only when it has an id array and an embedding matrix that line up. `GET /health` reports `npz_keys` and `npz_error`.
 - Query embeddings and Parakeet come from the MLX worker. If that worker is down, search matches names and the status line says embeddings are offline. Cosine scores are not faked.
 - If DigitalOcean, Gemini, Vertex, and local E4B are all unavailable, `planner` is `offline`, `ops` stays empty, and the status line says the planner is not loaded. No edit ops are synthesized.
-- If the vault is missing or empty, the panel shows three files from `public/samples` as ordinary library items: Flower (`flower.mp4`), Bunny (`bunny.mp4`), Bed (`bed.m4a`). They are not added when the vault has its own catalog.
+- The Media panel starts empty. Upload adds files. Search and find-similar show hits as results, and those hits can be placed. The panel does not list the vault on boot.
+- `public/samples` still holds Flower (`flower.mp4`), Bunny (`bunny.mp4`), and Bed (`bed.m4a`) for the worker when the vault folder is missing or empty. A search can return them. They are not seeded into the panel.
 
 Sample sources:
 

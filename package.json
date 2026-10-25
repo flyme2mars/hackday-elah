@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Monochrome browser editor. A command field drives search and timeline ops on @elah/editor.",
+  "description": "Frame Flow, a monochrome browser editor. A command field drives search and timeline ops on @elah/editor.",
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 43123 --strictPort",
     "build": "tsc -b && vite build",

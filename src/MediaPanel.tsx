@@ -18,7 +18,6 @@ const KINDS: { kind: LibraryKind; label: string }[] = [
 interface MediaPanelProps {
   library: readonly LibraryAsset[]
   results: readonly LibraryAsset[] | null
-  libraryReady: boolean
   readyIds: ReadonlyMap<string, string>
   onPlace: (asset: LibraryAsset) => void
   onPrepare: (asset: LibraryAsset) => void
@@ -28,7 +27,6 @@ interface MediaPanelProps {
 export default function MediaPanel({
   library,
   results,
-  libraryReady,
   readyIds,
   onPlace,
   onPrepare,
@@ -70,14 +68,7 @@ export default function MediaPanel({
           <h2>
             Library <span>All assets</span>
           </h2>
-          {!libraryReady && (
-            <div className="media-loading" role="status">
-              <span />
-              <span />
-              <p>Loading library…</p>
-            </div>
-          )}
-          {libraryReady && library.length === 0 && (
+          {library.length === 0 && (
             <div className="media-empty">
               <FolderOpen size={25} strokeWidth={1} />
               <p>Your library is empty</p>
