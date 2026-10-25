@@ -76,7 +76,7 @@ Host ops (`coerceOps` / `applyOps`): `set_stage`, `add_clip`, `add_text`, `trim`
 
 `needsUprightFlip` in `src/host/orient.ts` returns false. Do not auto-apply `scaleY = -1` on place.
 
-Find similar is the timeline context menu, then `POST /similar` with `vault_id`. `upload/*` ids are browser blobs. The worker returns a note and does not invent cosine scores. The Media panel starts empty. Upload, search, and find-similar are how media shows up. `search_vault` still reads the disk vault. When that vault is missing or empty, the worker can still search `public/samples` (Flower `flower.mp4`, Bunny `bunny.mp4`, Bed `bed.m4a`). Those files are not copied into the panel on boot.
+Find similar is the timeline context menu, then `POST /similar` with `vault_id`. `upload/*` ids are browser blobs. The worker returns a note and does not invent cosine scores. A search that does not name a kind ranks video, audio, and image separately. Embedding hits below `SENSE_MIN_SCORE` (default 0.50) are dropped. Name matches stay unscored. Search ranks every id in the vault npz, including rows the library list leaves out. `still` in that index counts as image. `GET /library` still returns at most 300 items. The Media panel starts empty. Upload, search, and find-similar are how media shows up. `search_vault` still reads the disk vault. When that vault is missing or empty, the worker can still search `public/samples` (Flower `flower.mp4`, Bunny `bunny.mp4`, Bed `bed.m4a`). Those files are not copied into the panel on boot.
 
 ## Product UI
 

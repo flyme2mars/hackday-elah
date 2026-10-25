@@ -66,7 +66,7 @@ If those routes differ in the MLX repo, point the env vars at the real ones. A m
 
 - If `vault_index_*.json` exists, that file is the catalog. Each record needs an `id` or `vault_id` or `path`, and a kind or a known extension. Paths must stay inside the vault.
 - Otherwise the worker scans media files and uses the path relative to the vault as the id.
-- Embeddings, when the npz lines up with those ids, rank search and similar. The query vector still has to come from the MLX embed route.
+- Embeddings, when the npz lines up with those ids, rank search and similar. The query vector still has to come from the MLX embed route. Search also ranks npz ids that the JSON catalog left out. A `modality` array value of `still` is image. When the query does not name a kind, video, audio, and image each keep their own top hits. Hits below `SENSE_MIN_SCORE` (default 0.50) are omitted. `GET /library` still stops at 300 items.
 
 When the vault folder is missing or empty, search can still return `public/samples` (Flower, Bunny, Bed). Those ids are the filenames. They are not mixed into a non-empty vault. The Media panel does not list them on boot.
 

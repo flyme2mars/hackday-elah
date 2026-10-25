@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
 
-from sense.catalog import Catalog, Item, Vectors
-from sense.planner import Call, _embed_text, run_command, run_similar, search_only
+from sense.catalog import LIBRARY_CAP, Catalog, Item, Vectors, load_vectors
+from sense.planner import Call, _embed_text, library_payload, media_path, run_command, run_similar, search_only
 from sense.retrieve import cosine
 
 UPLOAD_SIMILAR_NOTE = "Find similar works on vault clips. Browser uploads are not on disk for EmbeddingGemma yet."
@@ -32,6 +34,12 @@ def library_catalog() -> Catalog:
         ],
         dtype="float32",
     )
+    ids = [item.id for item in items]
+    return Catalog(Path("/tmp"), Path("/tmp"), items, None, Vectors(ids, matrix, ids), False)
+
+
+def _loaded(items: list[Item], rows: list[list[float]]) -> Catalog:
+    matrix = np.asarray(rows, dtype="float32")
     ids = [item.id for item in items]
     return Catalog(Path("/tmp"), Path("/tmp"), items, None, Vectors(ids, matrix, ids), False)
 
@@ -67,6 +75,10 @@ def timeline() -> dict:
             },
         ]
     }
+
+
+async def _axis(_text: str) -> list[float]:
+    return [1.0, 0.0]
 
 
 async def _ocean_or_phone(text: str) -> list[float] | None:
@@ -122,19 +134,22 @@ class RetrieveRankingTest(unittest.IsolatedAsyncioTestCase):
             photo = await search_only(library_catalog(), {"query": "photo of a phone"})
 
         self.assertEqual(ocean["mode"], "embedding")
-        self.assertEqual(_ids(ocean, "video")[0], "video/beach.mp4")
-        self.assertGreater(_scores(ocean, "video")[0], _scores(ocean, "video")[1])
+        self.assertEqual(_ids(ocean, "video"), ["video/beach.mp4"])
         self.assertGreater(_scores(ocean, "video")[0], 0.9)
-        self.assertEqual(ocean["hits"]["audio"], [])
+        self.assertEqual(_ids(ocean, "audio"), ["audio/ocean.m4a"])
+        self.assertGreater(_scores(ocean, "audio")[0], 0.9)
+        self.assertEqual(ocean["hits"]["image"], [])
         self.assertEqual(ocean["note"], "")
 
-        self.assertEqual(_ids(phone, "video")[0], "video/c2339.mp4")
-        self.assertGreater(_scores(phone, "video")[0], _scores(phone, "video")[1])
-        self.assertEqual(phone["hits"]["image"], [])
+        self.assertEqual(_ids(phone, "video"), ["video/c2339.mp4"])
+        self.assertGreater(_scores(phone, "video")[0], 0.9)
+        self.assertEqual(_ids(phone, "image"), ["stills/phone.jpg"])
+        self.assertGreater(_scores(phone, "image")[0], 0.9)
 
-        self.assertEqual(_ids(footage, "video")[0], "video/beach.mp4")
-        self.assertGreater(_scores(footage, "video")[0], _scores(footage, "video")[1])
+        self.assertEqual(_ids(footage, "video"), ["video/beach.mp4"])
+        self.assertGreater(_scores(footage, "video")[0], 0.9)
         self.assertEqual(footage["hits"]["audio"], [])
+        self.assertEqual(footage["hits"]["image"], [])
         self.assertIn("score", footage["hits"]["video"][0])
 
         self.assertEqual(_ids(photo, "image"), ["stills/phone.jpg"])
@@ -255,6 +270,140 @@ class RetrieveRankingTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.id for item, _score in ranked.hits], ["video/beach.mp4"])
         self.assertGreater(ranked.hits[0][1], 0.9)
 
+    async def test_embedding_search_drops_a_low_cosine_that_matches_the_name(self) -> None:
+        near = _item("video/near.mp4", "near", "video")
+        ocean = _item("video/ocean.mp4", "ocean", "video")
+        loaded = _loaded([near, ocean], [[1.0, 0.0], [0.0, 1.0]])
+        with patch("sense.planner._embed_text", _axis):
+            result = await search_only(loaded, {"query": "ocean"})
+        self.assertEqual(result["mode"], "embedding")
+        self.assertEqual(_ids(result, "video"), ["video/near.mp4"])
+        self.assertIn("score", result["hits"]["video"][0])
+        self.assertGreater(result["hits"]["video"][0]["score"], 0.9)
+        self.assertEqual(result["hits"]["audio"], [])
+        self.assertEqual(result["hits"]["image"], [])
+
+    async def test_every_cosine_below_the_floor_skips_name_matches(self) -> None:
+        ocean = _item("video/ocean.mp4", "ocean", "video")
+        other = _item("video/other.mp4", "other", "video")
+        loaded = _loaded([ocean, other], [[0.0, 1.0], [0.0, 1.0]])
+        with patch("sense.planner._embed_text", _axis):
+            result = await search_only(loaded, {"query": "ocean"})
+        self.assertEqual(result["mode"], "embedding")
+        self.assertEqual(result["hits"], {"video": [], "audio": [], "image": []})
+        self.assertEqual(result["note"], "Nothing confident enough.")
+
+    async def test_offline_similar_publishes_no_score(self) -> None:
+        beach = _item("video/beach.mp4", "Beach", "video")
+        shore = _item("video/shore.mp4", "beach shore", "video")
+        loaded = Catalog(Path("/tmp"), Path("/tmp"), [beach, shore], None, None, False)
+        result = await run_similar(loaded, {"vault_id": "video/beach.mp4"})
+        self.assertEqual(result["mode"], "name")
+        self.assertEqual(_ids(result, "video"), ["video/shore.mp4"])
+        self.assertNotIn("score", result["hits"]["video"][0])
+        self.assertIn("Embeddings are offline", result["note"])
+
+    async def test_min_score_env_on_the_ocean_catalog(self) -> None:
+        with (
+            patch("sense.planner._embed_text", _ocean_or_phone),
+            patch.dict(os.environ, {"SENSE_MIN_SCORE": "0.90"}),
+        ):
+            strict = await search_only(library_catalog(), {"query": "ocean"})
+        self.assertEqual(strict["mode"], "embedding")
+        self.assertEqual(_ids(strict, "video"), ["video/beach.mp4"])
+        self.assertGreater(_scores(strict, "video")[0], 0.9)
+        self.assertEqual(_ids(strict, "audio"), ["audio/ocean.m4a"])
+        self.assertNotIn("video/c2339.mp4", _ids(strict, "video"))
+
+        with (
+            patch("sense.planner._embed_text", _ocean_or_phone),
+            patch.dict(os.environ, {"SENSE_MIN_SCORE": "nope"}),
+        ):
+            both = await search_only(library_catalog(), {"query": "ocean"})
+        self.assertEqual(both["mode"], "embedding")
+        self.assertEqual(_ids(both, "video"), ["video/beach.mp4"])
+        self.assertEqual(_ids(both, "audio"), ["audio/ocean.m4a"])
+        self.assertNotIn("video/c2339.mp4", _ids(both, "video"))
+
+    async def test_similar_drops_a_neighbor_below_the_floor(self) -> None:
+        anchor = _item("video/anchor.mp4", "anchor", "video")
+        near = _item("video/near.mp4", "near", "video")
+        ocean = _item("video/ocean.mp4", "ocean", "video")
+        loaded = _loaded([anchor, near, ocean], [[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+        result = await run_similar(loaded, {"vault_id": "video/anchor.mp4"})
+        self.assertEqual(result["mode"], "embedding")
+        self.assertEqual(_ids(result, "video"), ["video/near.mp4"])
+        self.assertIn("score", result["hits"]["video"][0])
+        self.assertGreater(result["hits"]["video"][0]["score"], 0.9)
+
+    async def test_similar_below_the_floor_notes_nothing_confident(self) -> None:
+        anchor = _item("video/anchor.mp4", "anchor", "video")
+        ocean = _item("video/ocean.mp4", "ocean", "video")
+        loaded = _loaded([anchor, ocean], [[1.0, 0.0], [0.0, 1.0]])
+        result = await run_similar(loaded, {"vault_id": "video/anchor.mp4"})
+        self.assertEqual(result["mode"], "embedding")
+        self.assertEqual(result["hits"], {"video": [], "audio": [], "image": []})
+        self.assertEqual(result["note"], "Nothing confident enough.")
+
+    async def test_unscoped_search_keeps_a_confident_hit_in_each_kind(self) -> None:
+        video = _item("video/wave.mp4", "wave", "video")
+        audio = _item("audio/whoosh.wav", "whoosh", "audio")
+        image = _item("stills/wave.jpg", "wave", "image")
+        weak = _item("video/junk.mp4", "ocean", "video")
+        loaded = _loaded(
+            [video, audio, image, weak],
+            [[1.0, 0.0], [0.92, 0.08], [0.84, 0.12], [0.0, 1.0]],
+        )
+        with patch("sense.planner._embed_text", _axis):
+            result = await search_only(loaded, {"query": "whoosh"})
+        self.assertEqual(result["mode"], "embedding")
+        self.assertEqual(_ids(result, "video"), ["video/wave.mp4"])
+        self.assertEqual(_ids(result, "audio"), ["audio/whoosh.wav"])
+        self.assertEqual(_ids(result, "image"), ["stills/wave.jpg"])
+        self.assertGreater(_scores(result, "audio")[0], 0.5)
+        self.assertNotIn("video/junk.mp4", _ids(result, "video"))
+        self.assertEqual(result["note"], "")
+
+    async def test_npz_only_audio_and_still_rank_when_the_catalog_omits_them(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            whoosh = root / "audio" / "whoosh.wav"
+            wave = root / "stills" / "wave.jpg"
+            whoosh.parent.mkdir()
+            wave.parent.mkdir()
+            whoosh.write_bytes(b"wav")
+            wave.write_bytes(b"jpg")
+            beach = _item("video/beach.mp4", "Beach", "video")
+            ids = ["video/beach.mp4", "audio/whoosh.wav", "stills/wave.jpg"]
+            matrix = np.asarray([[0.0, 1.0], [1.0, 0.0], [0.9, 0.1]], dtype="float32")
+            vectors = Vectors(ids, matrix, ["ids", "embeddings", "modality"], None, ["video", "audio", "still"])
+            loaded = Catalog(root, root, [beach], None, vectors, True)
+            with patch("sense.planner._embed_text", _axis):
+                result = await search_only(loaded, {"query": "whoosh"})
+            self.assertEqual(_ids(result, "audio"), ["audio/whoosh.wav"])
+            self.assertEqual(_ids(result, "image"), ["stills/wave.jpg"])
+            self.assertEqual(result["hits"]["video"], [])
+            self.assertGreater(result["hits"]["audio"][0]["score"], 0.5)
+            self.assertTrue(result["hits"]["audio"][0]["src"].startswith("/media?id="))
+            self.assertEqual(result["hits"]["image"][0]["kind"], "image")
+            self.assertEqual(media_path(loaded, "audio/whoosh.wav"), whoosh)
+
+            index = root / "vault_index_t.npz"
+            np.savez(
+                index,
+                ids=np.array(["stills/wave.jpg"]),
+                embeddings=np.ones((1, 2), dtype=np.float32),
+                modality=np.array(["still"]),
+            )
+            saved = load_vectors(index)
+            self.assertEqual(saved.kinds, ["image"])
+
+    def test_library_payload_stops_at_the_cap(self) -> None:
+        items = [_item(f"video/v{index}.mp4", f"v{index}", "video") for index in range(LIBRARY_CAP + 1)]
+        loaded = Catalog(Path("/tmp"), Path("/tmp"), items, None, None, True)
+        payload = library_payload(loaded)
+        self.assertEqual(len(payload["items"]), LIBRARY_CAP)
+
 
 class PlannerSeparationTest(unittest.IsolatedAsyncioTestCase):
     async def test_find_footage_searches_and_trim_applies_ops(self) -> None:
@@ -283,9 +432,9 @@ class PlannerSeparationTest(unittest.IsolatedAsyncioTestCase):
                 {"command": "find ocean footage", "timeline": timeline(), "library": []},
             )
         self.assertEqual(found["ops"], [])
-        self.assertEqual(_ids(found, "video")[0], "video/beach.mp4")
-        self.assertGreater(_scores(found, "video")[0], _scores(found, "video")[1])
-        self.assertEqual(found["hits"]["audio"], [])
+        self.assertEqual(_ids(found, "video"), ["video/beach.mp4"])
+        self.assertGreater(_scores(found, "video")[0], 0.9)
+        self.assertEqual(_ids(found, "audio"), ["audio/ocean.m4a"])
 
         with patch("sense.planner._choose_planner", choose(trim)):
             edited = await run_command(
@@ -314,6 +463,54 @@ class PlannerSeparationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_ids(result, "video")[0], "video/beach.mp4")
         self.assertIn("score", result["hits"]["video"][0])
         self.assertEqual(result["hits"]["audio"], [])
+
+    async def test_command_search_omits_a_hit_below_the_floor(self) -> None:
+        async def find_ocean(contents: list, messages: list) -> tuple:
+            return [Call("search_vault", {"query": "ocean"})], contents, messages
+
+        def choose(planner: object):
+            async def _choose() -> object:
+                return planner
+
+            return _choose
+
+        near = _item("video/near.mp4", "near", "video")
+        ocean = _item("video/ocean.mp4", "ocean", "video")
+        loaded = _loaded([near, ocean], [[1.0, 0.0], [0.0, 1.0]])
+        with (
+            patch("sense.planner._choose_planner", choose(find_ocean)),
+            patch("sense.planner._embed_text", _axis),
+        ):
+            found = await run_command(
+                loaded,
+                {"command": "find ocean footage", "timeline": timeline(), "library": []},
+            )
+        self.assertEqual(found["ops"], [])
+        self.assertEqual(_ids(found, "video"), ["video/near.mp4"])
+        self.assertIn("score", found["hits"]["video"][0])
+        flat = [hit["vault_id"] for kind in found["hits"].values() for hit in kind]
+        self.assertNotIn("video/ocean.mp4", flat)
+
+    async def test_command_below_the_floor_notes_nothing_confident(self) -> None:
+        async def find_ocean(contents: list, messages: list) -> tuple:
+            return [Call("search_vault", {"query": "ocean"})], contents, messages
+
+        async def choose() -> object:
+            return find_ocean
+
+        ocean = _item("video/ocean.mp4", "ocean", "video")
+        loaded = _loaded([ocean], [[0.0, 1.0]])
+        with (
+            patch("sense.planner._choose_planner", choose),
+            patch("sense.planner._embed_text", _axis),
+        ):
+            result = await run_command(
+                loaded,
+                {"command": "find ocean footage", "timeline": timeline(), "library": []},
+            )
+        self.assertEqual(result["ops"], [])
+        self.assertEqual(result["hits"], {"video": [], "audio": [], "image": []})
+        self.assertEqual(result["note"], "Nothing confident enough.")
 
 
 if __name__ == "__main__":

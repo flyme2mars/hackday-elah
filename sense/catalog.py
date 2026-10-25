@@ -28,6 +28,9 @@ MEDIA_EXT = {
 SKIP_DIRS = {".git", "node_modules", ".cache", "__pycache__", ".venv"}
 LIBRARY_CAP = 300
 SCAN_CAP = 5000
+_IMAGE_KINDS = frozenset({"image", "images", "still", "stills", "photo", "photos", "picture", "pictures"})
+_VIDEO_KINDS = frozenset({"video", "videos"})
+_AUDIO_KINDS = frozenset({"audio"})
 
 BUNDLED = (
     ("flower.mp4", "video", "Flower", 5.005, "public/samples/flower.mp4"),
@@ -52,6 +55,7 @@ class Vectors:
     matrix: object
     keys: list[str]
     error: str | None = None
+    kinds: list[str] | None = None
 
 
 class Catalog:
@@ -97,7 +101,19 @@ class Catalog:
         for bundled in self.bundled():
             if bundled.id == vault_id:
                 return bundled
-        return None
+        return self.resolve_media(vault_id)
+
+    def resolve_media(self, vault_id: str) -> Item | None:
+        item = self.by_id.get(vault_id)
+        if item is not None:
+            return item
+        path = resolve_under(self.root, vault_id)
+        if path is None:
+            return None
+        kind = MEDIA_EXT.get(path.suffix.lower())
+        if kind not in ("video", "audio", "image"):
+            return None
+        return Item(vault_id, path.stem, kind, path, None, True)
 
 
 def newest(root: Path, pattern: str) -> Path | None:
@@ -161,11 +177,9 @@ def item_from_record(root: Path, record: object) -> Item | None:
         if path is None:
             return None
         raw_id = path.relative_to(root_resolved).as_posix()
-    kind = record.get("kind") or record.get("modality")
-    if isinstance(kind, str) and kind.lower() in ("still", "stills", "photo", "picture"):
-        kind = "image"
-    if not isinstance(kind, str) or kind not in ("video", "audio", "image"):
-        kind = MEDIA_EXT.get(path.suffix.lower(), "") if path is not None else ""
+    kind = normalize_kind(record.get("kind") or record.get("modality"))
+    if kind is None and path is not None:
+        kind = MEDIA_EXT.get(path.suffix.lower())
     if kind not in ("video", "audio", "image"):
         return None
     name = record.get("name") or record.get("label")
@@ -231,9 +245,37 @@ def load_vectors(path: Path) -> Vectors:
         if matrix.ndim != 2 or len(raw_ids) != matrix.shape[0]:
             return Vectors([], None, keys, "index shape does not match ids")
         ids = [_as_str(value) for value in raw_ids]
-        return Vectors(ids, matrix, keys, None)
+        return Vectors(ids, matrix, keys, None, _kinds_from(data, len(ids)))
     except Exception as error:
         return Vectors([], None, [], f"could not read {path.name}: {error}")
+
+
+def normalize_kind(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    token = value.strip().lower()
+    if token in _IMAGE_KINDS:
+        return "image"
+    if token in _VIDEO_KINDS:
+        return "video"
+    if token in _AUDIO_KINDS:
+        return "audio"
+    return None
+
+
+def _kinds_from(data: object, count: int) -> list[str] | None:
+    files = getattr(data, "files", ())
+    key = next((name for name in ("modality", "modalities", "kind", "kinds") if name in files), None)
+    if key is None:
+        return None
+    raw = data[key]
+    if len(raw) != count:
+        return None
+    kinds: list[str] = []
+    for value in raw:
+        kind = normalize_kind(_as_str(value))
+        kinds.append(kind or "")
+    return kinds
 
 
 def _as_str(value: object) -> str:
