@@ -1436,7 +1436,8 @@ def _prepare_model_ops(
             ops.append(item)
     ops = _apply_layout_intent(ops, command, timeline, selected)
     ops = _ensure_side_cut(ops, command, timeline, playhead_s, selected)
-    return _drop_unknown_side_cut_ops(ops, command, timeline, playhead_s, selected)
+    ops = _drop_unknown_side_cut_ops(ops, command, timeline, playhead_s, selected)
+    return _anchor_split_times(ops, command, timeline, playhead_s, selected)
 
 
 def _alias_op(raw: dict[str, Any], timeline: dict[str, Any], command: str, selected: list[str]) -> dict[str, Any]:
@@ -1762,6 +1763,29 @@ def _discarded_side(command: str) -> str | None:
     return None
 
 
+def _anchor_split_times(
+    ops: list[object],
+    command: str,
+    timeline: dict[str, Any],
+    playhead: float | None,
+    selected: list[str],
+) -> list[object]:
+    anchored: list[object] = []
+    for item in ops:
+        if not isinstance(item, dict) or item.get("op") != "split":
+            anchored.append(item)
+            continue
+        clip_id = _text_id(item.get("clip_id"))
+        if len(selected) == 1:
+            clip_id = selected[0]
+        at = _split_at(item, command, playhead, timeline, clip_id)
+        if at is None:
+            anchored.append(item)
+            continue
+        anchored.append({**item, "at_s": at})
+    return anchored
+
+
 def _split_at(
     op: dict[str, Any],
     command: str,
@@ -1769,18 +1793,77 @@ def _split_at(
     timeline: dict[str, Any],
     clip_id: str | None,
 ) -> float | None:
-    if clip_id and _mentions_here(command) and _inside(playhead, timeline, clip_id):
-        return float(playhead) if playhead is not None else None
-    existing = _finite_or_none(op.get("at_s"))
-    if existing is not None:
-        return existing
-    if clip_id and _inside(playhead, timeline, clip_id):
-        return float(playhead) if playhead is not None else None
     span = _span(_clip_record(timeline, clip_id) if clip_id else None)
+    fps = _timeline_fps(timeline)
+    here = _mentions_here(command)
+    named = _finite_or_none(op.get("at_s"))
+    # "here" uses the playhead, including the first and last frame of the clip.
+    if here and _touches(playhead, span, include_end=True):
+        return _nudge_inside(float(playhead), span, fps)
+    if _strictly_inside(named, span):
+        return named
+    if named is not None and span is not None and named in (span[0], span[1]):
+        return _nudge_inside(named, span, fps)
+    # A reported 0s is the clip's own start when timeline 0 is not on that clip.
+    if span is not None and span[0] > 0 and _reported_zero(here, playhead, named, span):
+        return _nudge_inside(span[0], span, fps)
+    if named is None and _touches(playhead, span, include_end=False):
+        return _nudge_inside(float(playhead), span, fps)
     if span is None:
-        return None
+        return named
     start, end = span
     return (start + end) / 2
+
+
+def _reported_zero(
+    here: bool,
+    playhead: float | None,
+    named: float | None,
+    span: tuple[float, float],
+) -> bool:
+    if named == 0:
+        return True
+    return here and playhead == 0 and not _strictly_inside(named, span)
+
+
+def _touches(playhead: float | None, span: tuple[float, float] | None, *, include_end: bool) -> bool:
+    if playhead is None or span is None:
+        return False
+    start, end = span
+    if include_end:
+        return start <= playhead <= end
+    return start <= playhead < end
+
+
+def _strictly_inside(at: float | None, span: tuple[float, float] | None) -> bool:
+    if at is None or span is None:
+        return False
+    start, end = span
+    return start < at < end
+
+
+def _timeline_fps(timeline: dict[str, Any]) -> float:
+    fps = _finite_or_none(timeline.get("fps"))
+    if fps is None or fps <= 0:
+        return 30.0
+    return fps
+
+
+def _nudge_inside(at: float, span: tuple[float, float] | None, fps: float) -> float:
+    if span is None:
+        return at
+    start, end = span
+    duration = end - start
+    if duration <= 0:
+        return at
+    # One host frame. splitClip rejects a cut on either edge, so the time has
+    # to round to a frame strictly inside the clip.
+    epsilon = min(1 / fps, duration / 2)
+    if at <= start:
+        return start + epsilon
+    if at >= end:
+        return end - epsilon
+    return at
 
 
 def _mentions_here(command: str) -> bool:
@@ -1809,23 +1892,13 @@ def _clip_under_playhead(timeline: dict[str, Any], playhead: float | None) -> st
     fallback: str | None = None
     for clip in _iter_clips(timeline):
         span = _span(clip)
-        if span is None or not (span[0] < playhead < span[1]):
+        if span is None or not (span[0] <= playhead < span[1]):
             continue
         found = _text_id(clip.get("alias")) or _text_id(clip.get("id"))
         if clip.get("type") == "video" and found:
             return found
         fallback = fallback or found
     return fallback
-
-
-def _inside(playhead: float | None, timeline: dict[str, Any], clip_id: str) -> bool:
-    if playhead is None:
-        return False
-    span = _span(_clip_record(timeline, clip_id))
-    if span is None:
-        return False
-    start, end = span
-    return start < playhead < end
 
 
 def _clip_record(timeline: dict[str, Any], clip_id: str | None) -> dict[str, Any] | None:

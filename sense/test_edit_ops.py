@@ -997,6 +997,87 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertIn(phrase, INSTRUCTIONS)
 
+    def test_split_at_zero_on_a_clip_that_starts_at_zero_is_inside(self):
+        # Repro: playhead 0s, clip contains 0. The engine rejects the exact start.
+        ops = validate_ops(
+            [{"op": "split", "clip_id": "c1", "at_s": 0}],
+            set(),
+            _span_timeline(0, 8),
+            "split here",
+            playhead_s=0,
+            selected=["c1"],
+        )
+        at = ops[0]["at_s"]
+        self.assertGreater(at, 0)
+        self.assertLess(at, 8)
+        self.assertEqual(ops[0]["clip_id"], "c1")
+
+    def test_playhead_zero_maps_into_a_clip_that_starts_later(self):
+        # Repro: split at 0s falls outside a clip that does not contain timeline 0.
+        ops = fan_selected_ops(
+            validate_ops(
+                [{"op": "split", "clip_id": "other", "at_s": 0}],
+                set(),
+                _span_timeline(4, 8),
+                "split here",
+                playhead_s=0,
+                selected=["c1"],
+            ),
+            ["c1"],
+            "split here",
+        )
+        at = ops[0]["at_s"]
+        self.assertGreater(at, 4)
+        self.assertLess(at, 12)
+        self.assertEqual(ops[0]["clip_id"], "c1")
+
+    def test_playhead_on_the_clip_start_splits_inside_that_clip(self):
+        ops = validate_ops(
+            [{"op": "split", "clip_id": "c1", "at_s": 0}],
+            set(),
+            _span_timeline(4, 8),
+            "split here",
+            playhead_s=4,
+            selected=["c1"],
+        )
+        at = ops[0]["at_s"]
+        self.assertGreater(at, 4)
+        self.assertLess(at, 12)
+
+    def test_split_on_the_exact_end_moves_inside_the_clip(self):
+        ops = validate_ops(
+            [{"op": "split", "clip_id": "c1", "at_s": 9}],
+            set(),
+            _span_timeline(1, 8),
+            "split this clip",
+        )
+        at = ops[0]["at_s"]
+        self.assertGreater(at, 1)
+        self.assertLess(at, 9)
+
+    def test_zero_playhead_side_cut_still_drops_only_the_right_half(self):
+        ops = validate_ops(
+            [{"op": "split", "clip_id": "c1", "at_s": 0}],
+            set(),
+            _span_timeline(4, 8),
+            "split here and delete the right",
+            playhead_s=0,
+            selected=["c1"],
+        )
+        self.assertEqual([op["op"] for op in ops], ["split", "remove"])
+        self.assertGreater(ops[0]["at_s"], 4)
+        self.assertLess(ops[0]["at_s"], 12)
+        self.assertEqual(ops[1]["clip_id"], ops[0]["right_id"])
+        self.assertNotEqual(ops[1]["clip_id"], "c1")
+
+
+def _span_timeline(start_s, duration_s):
+    data = timeline()
+    clip = data["tracks"][0]["clips"][0]
+    clip["start_s"] = start_s
+    clip["duration_s"] = duration_s
+    return data
+
 
 def _rotation(clip_id, seconds=10.0):
     return {

@@ -367,7 +367,8 @@ function applyOne(
     }
     case 'split': {
       const ref = resolveClip(engine, op.clip_id)
-      const atFrame = secondsToFrameCount(op.at_s, fps)
+      const clip = mustClip(engine, ref.id)
+      const atFrame = splitAtFrame(clip, op.clip_id, op.at_s, fps)
       const result = engine.splitClip(ref.id, ref.trackId, atFrame)
       if (!result) {
         throw new Error(`split at ${op.at_s}s falls outside clip "${op.clip_id}"`)
@@ -580,6 +581,26 @@ function mustClip(engine: TimelineEngine, clipId: string): Clip {
   const found = engine.findClip(clipId)
   if (!found) throw new Error(`Clip ${clipId} is not on the timeline`)
   return found.clip
+}
+
+/** splitClip returns null unless the frame is strictly inside the clip. */
+function splitAtFrame(clip: Clip, clipId: string, atSeconds: number, fps: number): number {
+  const start = clip.startFrame
+  const end = start + clip.durationFrames
+  if (end - start < 2) {
+    throw new Error(`"${clipId}" is too short to split.`)
+  }
+  let frame = secondsToFrameCount(atSeconds, fps)
+  // A reported 0s is this clip's start when the clip does not contain timeline 0.
+  if (frame === 0 && frame < start) frame = start
+  if (frame === start) frame = start + 1
+  if (frame === end) frame = end - 1
+  if (frame <= start || frame >= end) {
+    const from = frameCountToSeconds(start, fps)
+    const to = frameCountToSeconds(end, fps)
+    throw new Error(`split at ${atSeconds}s is outside clip "${clipId}" (${from}s to ${to}s).`)
+  }
+  return frame
 }
 
 function remember(alias: string, binding: ClipBinding): void {
