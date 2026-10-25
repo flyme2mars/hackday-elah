@@ -683,6 +683,42 @@ p {
   padding: 0;
   border-radius: 5px;
 }
+.mic-button {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #a6a6a6;
+}
+.mic-button:hover:not(:disabled) {
+  border-color: #505050;
+  background: #333;
+  color: #f1f1f1;
+}
+.mic-button[data-state='listening'] {
+  background: #ddd;
+  border-color: #eee;
+  color: #171717;
+  box-shadow: 0 0 0 3px #ffffff10;
+}
+.mic-button[data-state='denied'] {
+  border-color: #626262;
+  color: #ccc;
+}
+.mic-listening-dot {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
 .command-footer {
   display: flex;
   justify-content: space-between;
