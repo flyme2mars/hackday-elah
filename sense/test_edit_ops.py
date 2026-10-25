@@ -641,7 +641,6 @@ class EditOpsTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn(phrase, INSTRUCTIONS)
 
 
-
 def _spinning_timeline():
     return {
         "tracks": [{

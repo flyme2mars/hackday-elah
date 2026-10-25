@@ -62,10 +62,10 @@ To extend a rotation, zoom, pan, or other animation to N seconds, send set_motio
 
 When the prompt lists Selected clip_ids, those clips are selected. Prefer those ids for trim, set_transform, set_motion, remove, and split. Cut alone means split. at_s is seconds on the timeline. When the prompt lists a Playhead time, "here" is that time.
 
-"split the video here and delete the right part", "cut here and delete the right", "split and keep the left", and "remove everything after the cut" are two ops in this order: split at the playhead, then remove only the new right half.
+Any command that splits or cuts a clip and then deletes, removes, drops, or discards one side (right, left, after, or before), or that keeps only one side, is exactly two ops. The first is split, with right_id when the right half goes and left_id when the left half goes. The second is remove of that half alias. Never remove the original clip_id. Removing the original clip_id after a split deletes both halves. Never invent divide, bisect, split_into_two, split_in_half, halve, chop, or cut_right. The only cut op is split.
 {"op":"split","clip_id":"...","at_s":1.5,"right_id":"right-half"}
 {"op":"remove","clip_id":"right-half"}
-Removing the original clip_id after a split deletes both halves. "keep the right", "delete the left", and "remove everything before the cut" use left_id the same way, then remove that alias.
+That pair is "split here and delete the right", "split it into two and delete the right part", "split in half and keep the left", "cut into 2 and remove the right half", and "chop here and trash everything after". "keep the right", "delete the left", and "remove everything before the cut" use left_id, then remove that alias. When the command says here, at_s is the playhead. Otherwise at_s is the time they named, or the middle of the clip.
 
 When trimming to a new length, send duration_s only. Omit start_s unless the user asked to move the left edge.
 
@@ -1321,6 +1321,20 @@ _KNOWN_OPS = frozenset({
     "crossfade", "set_stage", "add_clip", "add_text", "trim", "split", "move",
     "remove", "set_volume", "set_transform", "set_motion", "update_text",
 })
+_SPLIT_ALIAS_COMPACT = frozenset({
+    "cut", "splitclip", "cutclip",
+    "divide", "bisect", "halve", "chop", "slice", "sever", "cleave",
+    "splitintotwo", "splitinto2", "splitintwo", "splitin2",
+    "splitinhalf", "splitintohalf", "splithalf",
+    "cutright", "cutleft", "cutinhalf", "cutintotwo", "cutinto2", "cutintwo",
+    "divideinhalf", "divideintotwo", "divideinto2", "bisectinhalf",
+})
+_SPLIT_ALIAS_HEADS = frozenset({"divide", "bisect", "halve", "chop", "slice", "sever", "cleave"})
+_SIDE_CUT_RE = re.compile(
+    r"\b(?:split|cut|chop|divide|bisect|halve|slice|sever)\b"
+    r"|\bin(?:to)?\s+(?:two|2|half)\b",
+    re.IGNORECASE,
+)
 _TRANSFORM_NAMES = frozenset({
     "scale", "set_scale", "resize", "set_zoom", "zoom", "zoom_in", "zoomin",
     "zoom_out", "zoomout", "larger", "bigger", "smaller", "make_larger",
@@ -1413,7 +1427,8 @@ def _prepare_model_ops(
         else:
             ops.append(item)
     ops = _apply_layout_intent(ops, command, timeline, selected)
-    return _ensure_side_cut(ops, command, timeline, playhead_s, selected)
+    ops = _ensure_side_cut(ops, command, timeline, playhead_s, selected)
+    return _drop_unknown_side_cut_ops(ops, command, timeline, playhead_s, selected)
 
 
 def _alias_op(raw: dict[str, Any], timeline: dict[str, Any], command: str, selected: list[str]) -> dict[str, Any]:
@@ -1436,13 +1451,24 @@ def _alias_op(raw: dict[str, Any], timeline: dict[str, Any], command: str, selec
         return {**raw, "op": "remove"}
     if key in {"delete_right", "remove_right", "drop_right", "delete_left", "remove_left", "drop_left"}:
         return {**raw, "op": "remove"}
-    if key in {"cut", "split_clip"}:
+    if _is_split_alias(key):
         return _alias_split({**raw, "op": "split"})
     if _looks_like_motion(raw) and (key in _TRANSFORM_NAMES or key in {"animate", "pan", "fade"}):
         return _as_motion(raw, key, selected)
     if key in _TRANSFORM_NAMES or _unknown_transform(key, raw):
         return _as_transform(raw, key, timeline, command, selected)
     return raw
+
+
+def _is_split_alias(key: str) -> bool:
+    compact = key.replace("_", "")
+    if compact in _SPLIT_ALIAS_COMPACT:
+        return True
+    return key.split("_", 1)[0] in _SPLIT_ALIAS_HEADS
+
+
+def _wants_side_cut(command: str) -> bool:
+    return _SIDE_CUT_RE.search(command) is not None
 
 
 def _alias_split(raw: dict[str, Any]) -> dict[str, Any]:
@@ -1623,9 +1649,8 @@ def _ensure_side_cut(
     side = _discarded_side(command)
     if side is None:
         return ops
-    wants_cut = re.search(r"\b(?:split|cut)\b", command.lower()) is not None
     has_split = any(isinstance(op, dict) and op.get("op") == "split" for op in ops)
-    if not wants_cut and not has_split:
+    if not _wants_side_cut(command) and not has_split:
         return ops
     field = "right_id" if side == "right" else "left_id"
     base = "right-half" if side == "right" else "left-half"
@@ -1640,7 +1665,7 @@ def _ensure_side_cut(
     for op in working:
         if not isinstance(op, dict) or op.get("op") != "split":
             continue
-        clip_id = _text_id(op.get("clip_id"))
+        clip_id = _text_id(op.get("clip_id")) or _cut_target(timeline, playhead, selected)
         if clip_id is None:
             continue
         if len(selected) == 1:
@@ -1690,6 +1715,24 @@ def _ensure_side_cut(
             continue
         output.append(op)
     return output
+
+
+def _drop_unknown_side_cut_ops(
+    ops: list[object],
+    command: str,
+    timeline: dict[str, Any],
+    playhead: float | None,
+    selected: list[str],
+) -> list[object]:
+    if _discarded_side(command) is None:
+        return ops
+    kept = [op for op in ops if isinstance(op, dict) and op.get("op") in _KNOWN_OPS]
+    has_split = any(op.get("op") == "split" for op in kept)
+    if not has_split and not _wants_side_cut(command):
+        return ops
+    if not has_split:
+        return _ensure_side_cut(kept, command, timeline, playhead, selected)
+    return kept
 
 
 def _discarded_side(command: str) -> str | None:
