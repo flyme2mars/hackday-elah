@@ -82,10 +82,6 @@ import {
 
 const demuxerFactory = createDefaultDemuxerFactory()
 
-function prepareAsset(asset: LibraryAsset) {
-  void ensureImported(asset)
-}
-
 const INITIAL_TRACKS: InitialTrackConfig[] = [
   { kind: 'video', name: 'V1', protected: true },
   { kind: 'video', name: 'V2', protected: true },
@@ -168,25 +164,34 @@ function EditorShell() {
     return () => window.clearTimeout(timer)
   }, [status])
 
+  const mountedRef = useRef(true)
   useEffect(() => {
-    let cancel = false
-    const queue = results ? [...library, ...results] : library
-    for (const item of queue) {
-      if (readyRef.current.has(item.vaultId)) continue
-      void ensureImported(item)
-        .then((assetId) => {
-          if (cancel) return
-          readyRef.current.set(item.vaultId, assetId)
-          setReadyIds(new Map(readyRef.current))
-        })
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  const rememberReady = useCallback((vaultId: string, assetId: string) => {
+    if (!mountedRef.current) return
+    if (readyRef.current.get(vaultId) === assetId) return
+    readyRef.current.set(vaultId, assetId)
+    setReadyIds(new Map(readyRef.current))
+  }, [])
+
+  // The panel calls this for visible and nearby cards only. Off-screen cards stay mounted
+  // but do not import until they scroll near or the user points at them.
+  const prepareAsset = useCallback(
+    (asset: LibraryAsset) => {
+      if (readyRef.current.has(asset.vaultId)) return
+      void ensureImported(asset)
+        .then((assetId) => rememberReady(asset.vaultId, assetId))
         .catch(() => {
           // Drag waits until the file imports. Click reports the error itself.
         })
-    }
-    return () => {
-      cancel = true
-    }
-  }, [library, results])
+    },
+    [rememberReady],
+  )
 
   const onUpload = useCallback(
     async (files: readonly File[]) => {
@@ -198,6 +203,11 @@ function EditorShell() {
           setStatus('Nothing new to add.')
           return
         }
+        for (const asset of added) {
+          const assetId = await ensureImported(asset)
+          readyRef.current.set(asset.vaultId, assetId)
+        }
+        setReadyIds(new Map(readyRef.current))
         setLibrary((current) => {
           const ids = new Set(added.map((item) => item.vaultId))
           return [...added, ...current.filter((item) => !ids.has(item.vaultId))]
@@ -212,15 +222,21 @@ function EditorShell() {
     [closeMenu],
   )
 
-  function onDragAsset(data: DataTransfer, asset: LibraryAsset, assetId: string) {
-    beginMediaDrag(data, asset, assetId, engine)
-  }
+  const onDragAsset = useCallback(
+    (data: DataTransfer, asset: LibraryAsset, assetId: string) => {
+      beginMediaDrag(data, asset, assetId, engine)
+    },
+    [engine],
+  )
 
-  function onDragAssetEnd(assetId: string) {
-    const placed = finishMediaDrag(assetId, engine)
-    if (!placed) return
-    setLibrary((current) => mergeLibraryAssets(current, [placed]))
-  }
+  const onDragAssetEnd = useCallback(
+    (assetId: string) => {
+      const placed = finishMediaDrag(assetId, engine)
+      if (!placed) return
+      setLibrary((current) => mergeLibraryAssets(current, [placed]))
+    },
+    [engine],
+  )
 
   const onPlace = useCallback(
     async (asset: LibraryAsset) => {

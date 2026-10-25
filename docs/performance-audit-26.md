@@ -1,8 +1,28 @@
 # Frame Flow performance audit, issue #26
 
+## P0 loading policy
+
+Implemented after this audit. Off-screen library and search cards stay mounted
+so drag targets and labels remain, but they do not mount video or image sources
+and the shell does not call `ensureImported` for the whole list. Each media
+scroller prepares cards that intersect it, plus a 120px margin for the next row.
+Those imports share one in-flight job per vault id and per source URL, and at
+most two run at a time (`MEDIA_IMPORT_CONCURRENCY` in `src/host/media.ts`).
+The list is not windowed. Export on a Mac, and the P2 motion, bounds, and memory
+items below, stay deferred.
+
+The original admission check (`docs/performance/26-media-admission.json`) was
+300 cards, 6 visible, 300 thumbnail videos, 600 created video elements, and
+600 held requests. The same probe after this policy, with responses held, was
+6 visible cards, 8 thumbnail videos, 10 created video elements, and 10 held
+requests. `tests/media-admission-audit.mjs` fails if created video elements or
+held requests climb anywhere near the old totals. `tests/performance-audit.mjs`
+waits for visible cards to become draggable instead of the whole list.
+
 The small media-panel change makes scripted command typing faster in this
 controlled test. It does not establish faster search, editing, scrubbing, export,
-or lower memory use. The main remaining scaling risk is unbounded media loading.
+or lower memory use. The main remaining scaling risk at the time of the audit
+was unbounded media loading.
 
 `git pull --ff-only origin main` completed before work began. The baseline is
 `8fdf4ad`, which includes the split-selection and microphone changes from #25.
@@ -15,7 +35,7 @@ changes.
 
 | Priority | Symptom and evidence | Likely cause | Suggested fix, effort and disposition |
 | --- | --- | --- | --- |
-| P0 at large catalogs | Off-screen videos compete with visible media for loading and decoder resources. A controlled 300-card admission probe had 6 cards visible, 300 thumbnail videos, 600 created video elements and 600 held media requests. | `MediaPanel` mounts every thumbnail with `preload="metadata"`. `EditorShell` also calls `ensureImported` for the whole result list. Concurrent imports can probe the same URL before the SDK registers it. | Prepare visible or nearby cards, bound background imports, and share in-flight imports. Then consider windowing the list. Rough effort: half to one day plus drag/upload regression checks. **Won't do for this hackathon change**: this needs a separate loading-policy change. Keep normal search limits and avoid bulk video imports in the demo. |
+| P0 at large catalogs | Off-screen videos compete with visible media for loading and decoder resources. A controlled 300-card admission probe had 6 cards visible, 300 thumbnail videos, 600 created video elements and 600 held media requests. | `MediaPanel` mounts every thumbnail with `preload="metadata"`. `EditorShell` also calls `ensureImported` for the whole result list. Concurrent imports can probe the same URL before the SDK registers it. | Prepare visible or nearby cards, bound background imports, and share in-flight imports. List windowing only if that is not enough. **At audit time** this was left for a later loading-policy change. It is implemented now; see the P0 loading policy section. |
 | P1, fixed here | Typing rerenders the media tree even when its assets have not changed. With 300 cards, a 52-character sequence took a median 1,770.8 ms before and 1,178.8 ms after. | The shell owns command text. Fresh callback props previously forced `MediaPanel` and every card through React reconciliation. Separate CPU samples showed media-panel work in the baseline and none sampled in the candidate. | Memoize the panel and stabilize its callbacks. Implemented on `perf/26-editor-audit`. Small change, roughly one hour including verification. |
 | P1, requires Mac confirmation | A 4.5-second export did not report completion within the audit's 30-second deadline. This is a failed probe, not an export speed measurement. | The run uses headless Linux with software WebGL and CPU throttling. The cause is not isolated. `lazyExportVideo` already uses a worker, so a timeout alone does not prove a main-thread block. | Repeat on the M2 with desktop Chromium, inspect worker/encoder progress, and separate render from encode time. Rough effort: one to two hours for diagnosis. **Won't change export for the hackathon based on this Linux result.** |
 | P2, profile before changing | Large animated timelines may allocate and repeat validation every frame. No demonstrated bottleneck in the short scene tested here. | `projectAtFrame` visits all clips. `readHostMotion` reads and sorts keys on each sample, including motion on inactive clips. | Profile a large real project on the Mac. Consider caching parsed motion by immutable clip identity and preserving source-frame behavior. Rough effort: one day with the cloud owner and export tests. Deferred. |

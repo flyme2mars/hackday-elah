@@ -36,6 +36,8 @@ try {
   await input.fill('show footage')
   await input.press('Enter')
   await page.waitForFunction((count) => document.querySelectorAll('.media-search .hit').length === count, size)
+  await page.waitForFunction(() => document.querySelectorAll('.media-search video').length > 0)
+  // Hold long enough that an eager list would have admitted every card.
   await page.waitForTimeout(500)
   const counts = await page.evaluate(() => {
     const panel = document.querySelector('.media-search')
@@ -52,7 +54,19 @@ try {
     }
   })
   assert.equal(counts.cards, size)
-  assert.equal(counts.dom_videos, size)
+  // Before P0 this fixture admitted every card: 300 thumbnail videos, 600 created
+  // video elements, and 600 held requests, with about 6 cards actually visible.
+  assert.ok(counts.cards_intersecting_scroll_panel > 0)
+  assert.ok(counts.cards_intersecting_scroll_panel < size / 10)
+  assert.ok(counts.dom_videos > 0, 'visible cards should still mount a thumbnail')
+  assert.ok(
+    counts.dom_videos <= counts.cards_intersecting_scroll_panel + 8,
+    `thumbnail videos should stay near the visible set, got ${counts.dom_videos}`,
+  )
+  assert.ok(counts.created_video_elements < 80, `created videos ${counts.created_video_elements}`)
+  assert.ok(held.length < 80, `held requests ${held.length}`)
+  assert.ok(counts.created_video_elements < size)
+  assert.ok(held.length < size)
   const result = { url, chrome: browser.version(), media_responses_deliberately_held: true, ...counts, held_requests: held.length, warnings }
   await writeFile(process.env.AUDIT_OUTPUT || '/tmp/frame-flow-media-admission.json', JSON.stringify(result, null, 2))
   console.log(JSON.stringify(result))

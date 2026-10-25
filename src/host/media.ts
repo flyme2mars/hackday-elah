@@ -1,8 +1,15 @@
 import { importBlob, importFiles, importUrl, MEDIA_DRAG_MIME, mediaDragKindMime, type MediaAsset, type TimelineEngine } from '@elah/editor'
 import { droppedLibraryAsset, type PendingDrop, type TimelineClipRef } from './dropPlace.ts'
+import { createSharedGate } from './importGate.ts'
 import { getLibraryAsset, registerAssets, type LibraryAsset, type LibraryKind } from './library.ts'
 
 const elahIds = new Map<string, string>()
+const loadedByVault = new Map<string, MediaAsset>()
+
+/** Visible cards and the nearby row share this many SDK imports. */
+export const MEDIA_IMPORT_CONCURRENCY = 2
+
+const mediaImports = createSharedGate(MEDIA_IMPORT_CONCURRENCY)
 
 const EXTENSION_KIND: Record<string, LibraryKind> = {
   mp4: 'video',
@@ -23,12 +30,42 @@ const EXTENSION_KIND: Record<string, LibraryKind> = {
   webp: 'image',
 }
 
+function importKeys(asset: LibraryAsset): string[] {
+  const keys = [`vault:${asset.vaultId}`]
+  if (!asset.src) return keys
+  keys.push(`src:${asset.src}`)
+  if (typeof window === 'undefined') return keys
+  try {
+    const url = new URL(asset.src, window.location.origin)
+    keys.push(`src:${url.href}`)
+    keys.push(`src:${url.pathname}${url.search}`)
+  } catch {
+    // Keep the raw source key when the URL cannot be parsed.
+  }
+  return keys
+}
+
+/**
+ * Import a library file once per vault id and source URL.
+ * Callers join an in-flight import instead of probing the same URL again.
+ * At most {@link MEDIA_IMPORT_CONCURRENCY} imports run at a time.
+ */
+export async function importLibraryMedia(asset: LibraryAsset): Promise<MediaAsset> {
+  const cached = loadedByVault.get(asset.vaultId)
+  if (cached) return cached
+  const imported = await mediaImports.run(importKeys(asset), 0, () =>
+    importUrl(asset.src, { name: asset.name, kind: asset.kind }),
+  )
+  loadedByVault.set(asset.vaultId, imported)
+  elahIds.set(asset.vaultId, imported.id)
+  if (imported.src) registerAssets([{ ...asset, src: imported.src }])
+  return imported
+}
+
 export async function ensureImported(asset: LibraryAsset): Promise<string> {
   const cached = elahIds.get(asset.vaultId)
   if (cached) return cached
-  const imported = await importUrl(asset.src, { name: asset.name, kind: asset.kind })
-  elahIds.set(asset.vaultId, imported.id)
-  registerAssets([{ ...asset, src: imported.src }])
+  const imported = await importLibraryMedia(asset)
   return imported.id
 }
 
@@ -58,6 +95,7 @@ function rememberUpload(imported: MediaAsset, taken: Set<string>): LibraryAsset 
   if (!isLibraryKind(imported.kind) || !imported.src) return null
   const vaultId = uniqueUploadId(imported.name, taken)
   elahIds.set(vaultId, imported.id)
+  loadedByVault.set(vaultId, imported)
   return {
     vaultId,
     name: imported.name.trim() || 'Upload',

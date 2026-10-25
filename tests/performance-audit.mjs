@@ -141,12 +141,17 @@ async function trial(url, index) {
   mode = 'search'
   const search = await command('find footage')
   assert.equal(await page.locator('.media-search .hit').count(), size)
-  await page.waitForFunction(
-    (size) =>
-      document.querySelectorAll('.media-search .hit[draggable="true"]')
-        .length === size,
-    size,
-  )
+  // Off-screen cards are no longer imported up front. Wait until the visible ones can drag.
+  await page.waitForFunction(() => {
+    const panel = document.querySelector('.media-search')
+    if (!panel) return false
+    const bounds = panel.getBoundingClientRect()
+    const visible = [...panel.querySelectorAll('.hit')].filter((card) => {
+      const rect = card.getBoundingClientRect()
+      return rect.bottom > bounds.top && rect.top < bounds.bottom && rect.width > 0
+    })
+    return visible.length > 0 && visible.every((card) => card instanceof HTMLElement && card.draggable)
+  })
   await cdp.send('HeapProfiler.collectGarbage')
   const metrics = await cdp.send('Performance.getMetrics')
   const heap = metrics.metrics.find((m) => m.name === 'JSHeapUsedSize')?.value
