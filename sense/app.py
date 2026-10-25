@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from sense.catalog import Catalog
+from sense.dictation_upload import DictationRejected, transcribe_upload
 from sense.planner import health, library_payload, media_path, run_command, run_similar, search_only, thumb_path
 
 app = FastAPI(title="sense")
@@ -50,6 +51,18 @@ async def post_similar(request: Request) -> dict:
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="Expected an object.")
     return await run_similar(catalog, body)
+
+
+@app.post("/v1/dictation")
+async def post_dictation(request: Request) -> dict:
+    """One recorded clip. Local Parakeet only. Body is the audio bytes."""
+    data = await request.body()
+    content_type = request.headers.get("content-type", "")
+    try:
+        text = await transcribe_upload(data, content_type)
+    except DictationRejected as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail) from error
+    return {"text": text}
 
 
 @app.post("/search")
