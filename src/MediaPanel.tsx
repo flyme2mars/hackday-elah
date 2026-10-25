@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { memo, useRef } from 'react'
 import {
   Plus,
   Film,
@@ -25,7 +25,7 @@ interface MediaPanelProps {
   onUpload: (files: File[]) => void
 }
 
-export default function MediaPanel({
+export default memo(function MediaPanel({
   library,
   results,
   readyIds,
@@ -109,7 +109,7 @@ export default function MediaPanel({
       </div>
     </aside>
   )
-}
+})
 
 function KindSections({
   items,

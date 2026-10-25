@@ -1,0 +1,444 @@
+{
+  "chrome": "155.0.8059.79",
+  "platform": "linux",
+  "results": [
+    {
+      "url": "http://127.0.0.1:43124",
+      "run": 0,
+      "assets": 12,
+      "cpu_throttle": 4,
+      "empty_load_ms": 3120.900000002235,
+      "search": {
+        "ms": 263.9000000022352,
+        "long_tasks": []
+      },
+      "typing": {
+        "ms": 1192.300000000745,
+        "long_tasks": []
+      },
+      "place": {
+        "ms": 435.69999999925494,
+        "long_tasks": []
+      },
+      "split": {
+        "ms": 295.6000000014901,
+        "long_tasks": []
+      },
+      "transform": {
+        "ms": 361.69999999925494,
+        "long_tasks": []
+      },
+      "motion": {
+        "ms": 582.8999999985099,
+        "long_tasks": []
+      },
+      "scrub": {
+        "ms": 726.1999999992549,
+        "long_tasks": []
+      },
+      "export_attempt": null,
+      "export_outcome": "Not attempted in timing comparison",
+      "js_heap_bytes_after_gc": 5937584,
+      "requests": 5,
+      "errors": [],
+      "failures": []
+    },
+    {
+      "url": "http://127.0.0.1:43125",
+      "run": 0,
+      "assets": 12,
+      "cpu_throttle": 4,
+      "empty_load_ms": 1070.800000000745,
+      "search": {
+        "ms": 443.5,
+        "long_tasks": [
+          74,
+          60
+        ]
+      },
+      "typing": {
+        "ms": 1121.800000000745,
+        "long_tasks": []
+      },
+      "place": {
+        "ms": 185.69999999925494,
+        "long_tasks": []
+      },
+      "split": {
+        "ms": 252.69999999925494,
+        "long_tasks": []
+      },
+      "transform": {
+        "ms": 476.79999999701977,
+        "long_tasks": []
+      },
+      "motion": {
+        "ms": 551.6000000014901,
+        "long_tasks": []
+      },
+      "scrub": {
+        "ms": 543.9000000022352,
+        "long_tasks": []
+      },
+      "export_attempt": null,
+      "export_outcome": "Not attempted in timing comparison",
+      "js_heap_bytes_after_gc": 5949028,
+      "requests": 5,
+      "errors": [],
+      "failures": []
+    },
+    {
+      "url": "http://127.0.0.1:43124",
+      "run": 1,
+      "assets": 12,
+      "cpu_throttle": 4,
+      "empty_load_ms": 1093.800000000745,
+      "search": {
+        "ms": 322.5999999977648,
+        "long_tasks": [
+          75
+        ]
+      },
+      "typing": {
+        "ms": 1155.800000000745,
+        "long_tasks": []
+      },
+      "place": {
+        "ms": 278.5,
+        "long_tasks": []
+      },
+      "split": {
+        "ms": 161.89999999850988,
+        "long_tasks": []
+      },
+      "transform": {
+        "ms": 372.6000000014901,
+        "long_tasks": []
+      },
+      "motion": {
+        "ms": 486.1000000014901,
+        "long_tasks": []
+      },
+      "scrub": {
+        "ms": 604.6999999992549,
+        "long_tasks": []
+      },
+      "export_attempt": null,
+      "export_outcome": "Not attempted in timing comparison",
+      "js_heap_bytes_after_gc": 5967980,
+      "requests": 5,
+      "errors": [],
+      "failures": []
+    },
+    {
+      "url": "http://127.0.0.1:43125",
+      "run": 1,
+      "assets": 12,
+      "cpu_throttle": 4,
+      "empty_load_ms": 1058.199999999255,
+      "search": {
+        "ms": 323.29999999701977,
+        "long_tasks": []
+      },
+      "typing": {
+        "ms": 1114.9000000022352,
+        "long_tasks": []
+      },
+      "place": {
+        "ms": 215.5,
+        "long_tasks": [
+          53
+        ]
+      },
+      "split": {
+        "ms": 173.69999999925494,
+        "long_tasks": []
+      },
+      "transform": {
+        "ms": 237.80000000074506,
+        "long_tasks": []
+      },
+      "motion": {
+        "ms": 245.10000000149012,
+        "long_tasks": []
+      },
+      "scrub": {
+        "ms": 602.5,
+        "long_tasks": []
+      },
+      "export_attempt": null,
+      "export_outcome": "Not attempted in timing comparison",
+      "js_heap_bytes_after_gc": 5987052,
+      "requests": 5,
+      "errors": [],
+      "failures": []
+    },
+    {
+      "url": "http://127.0.0.1:43124",
+      "run": 2,
+      "assets": 12,
+      "cpu_throttle": 4,
+      "empty_load_ms": 1073.699999999255,
+      "search": {
+        "ms": 363.30000000074506,
+        "long_tasks": [
+          53
+        ]
+      },
+      "typing": {
+        "ms": 1160.2000000029802,
+        "long_tasks": []
+      },
+      "place": {
+        "ms": 214.69999999925494,
+        "long_tasks": []
+      },
+      "split": {
+        "ms": 216.40000000223517,
+        "long_tasks": []
+      },
+      "transform": {
+        "ms": 267.6000000014901,
+        "long_tasks": [
+          54
+        ]
+      },
+      "motion": {
+        "ms": 559,
+        "long_tasks": []
+      },
+      "scrub": {
+        "ms": 698.5999999977648,
+        "long_tasks": [
+          53
+        ]
+      },
+      "export_attempt": null,
+      "export_outcome": "Not attempted in timing comparison",
+      "js_heap_bytes_after_gc": 5968108,
+      "requests": 5,
+      "errors": [],
+      "failures": []
+    },
+    {
+      "url": "http://127.0.0.1:43125",
+      "run": 2,
+      "assets": 12,
+      "cpu_throttle": 4,
+      "empty_load_ms": 1075.199999999255,
+      "search": {
+        "ms": 344.9000000022352,
+        "long_tasks": []
+      },
+      "typing": {
+        "ms": 1067.300000000745,
+        "long_tasks": []
+      },
+      "place": {
+        "ms": 207.89999999850988,
+        "long_tasks": []
+      },
+      "split": {
+        "ms": 212.69999999925494,
+        "long_tasks": []
+      },
+      "transform": {
+        "ms": 316.30000000074506,
+        "long_tasks": []
+      },
+      "motion": {
+        "ms": 352.3999999985099,
+        "long_tasks": []
+      },
+      "scrub": {
+        "ms": 603.7000000029802,
+        "long_tasks": []
+      },
+      "export_attempt": null,
+      "export_outcome": "Not attempted in timing comparison",
+      "js_heap_bytes_after_gc": 5950360,
+      "requests": 5,
+      "errors": [],
+      "failures": []
+    },
+    {
+      "url": "http://127.0.0.1:43124",
+      "run": 3,
+      "assets": 12,
+      "cpu_throttle": 4,
+      "empty_load_ms": 1066.1000000014901,
+      "search": {
+        "ms": 408.80000000074506,
+        "long_tasks": [
+          62,
+          64
+        ]
+      },
+      "typing": {
+        "ms": 1202.6000000014901,
+        "long_tasks": []
+      },
+      "place": {
+        "ms": 215.10000000149012,
+        "long_tasks": []
+      },
+      "split": {
+        "ms": 210.5,
+        "long_tasks": []
+      },
+      "transform": {
+        "ms": 248.60000000149012,
+        "long_tasks": []
+      },
+      "motion": {
+        "ms": 465.79999999701977,
+        "long_tasks": []
+      },
+      "scrub": {
+        "ms": 567.3000000007451,
+        "long_tasks": []
+      },
+      "export_attempt": null,
+      "export_outcome": "Not attempted in timing comparison",
+      "js_heap_bytes_after_gc": 5955584,
+      "requests": 5,
+      "errors": [],
+      "failures": []
+    },
+    {
+      "url": "http://127.0.0.1:43125",
+      "run": 3,
+      "assets": 12,
+      "cpu_throttle": 4,
+      "empty_load_ms": 1187.800000000745,
+      "search": {
+        "ms": 391.0999999977648,
+        "long_tasks": [
+          103
+        ]
+      },
+      "typing": {
+        "ms": 1080.3999999985099,
+        "long_tasks": []
+      },
+      "place": {
+        "ms": 225.89999999850988,
+        "long_tasks": [
+          51
+        ]
+      },
+      "split": {
+        "ms": 195.89999999850988,
+        "long_tasks": []
+      },
+      "transform": {
+        "ms": 388,
+        "long_tasks": [
+          56
+        ]
+      },
+      "motion": {
+        "ms": 429.9000000022352,
+        "long_tasks": []
+      },
+      "scrub": {
+        "ms": 601,
+        "long_tasks": []
+      },
+      "export_attempt": null,
+      "export_outcome": "Not attempted in timing comparison",
+      "js_heap_bytes_after_gc": 5947004,
+      "requests": 5,
+      "errors": [],
+      "failures": []
+    },
+    {
+      "url": "http://127.0.0.1:43124",
+      "run": 4,
+      "assets": 12,
+      "cpu_throttle": 4,
+      "empty_load_ms": 1046.1000000014901,
+      "search": {
+        "ms": 348.5,
+        "long_tasks": []
+      },
+      "typing": {
+        "ms": 1208.199999999255,
+        "long_tasks": []
+      },
+      "place": {
+        "ms": 199.09999999776483,
+        "long_tasks": []
+      },
+      "split": {
+        "ms": 230.89999999850988,
+        "long_tasks": []
+      },
+      "transform": {
+        "ms": 356.6000000014901,
+        "long_tasks": [
+          64
+        ]
+      },
+      "motion": {
+        "ms": 602.3999999985099,
+        "long_tasks": [
+          61
+        ]
+      },
+      "scrub": {
+        "ms": 605.3999999985099,
+        "long_tasks": []
+      },
+      "export_attempt": null,
+      "export_outcome": "Not attempted in timing comparison",
+      "js_heap_bytes_after_gc": 5999164,
+      "requests": 5,
+      "errors": [],
+      "failures": []
+    },
+    {
+      "url": "http://127.0.0.1:43125",
+      "run": 4,
+      "assets": 12,
+      "cpu_throttle": 4,
+      "empty_load_ms": 1106.5999999977648,
+      "search": {
+        "ms": 424.6000000014901,
+        "long_tasks": [
+          75
+        ]
+      },
+      "typing": {
+        "ms": 1134.7000000029802,
+        "long_tasks": []
+      },
+      "place": {
+        "ms": 206.89999999850988,
+        "long_tasks": []
+      },
+      "split": {
+        "ms": 186,
+        "long_tasks": []
+      },
+      "transform": {
+        "ms": 269.4000000022352,
+        "long_tasks": []
+      },
+      "motion": {
+        "ms": 597.2999999970198,
+        "long_tasks": []
+      },
+      "scrub": {
+        "ms": 636.3999999985099,
+        "long_tasks": []
+      },
+      "export_attempt": null,
+      "export_outcome": "Not attempted in timing comparison",
+      "js_heap_bytes_after_gc": 5945388,
+      "requests": 5,
+      "errors": [],
+      "failures": []
+    }
+  ]
+}
