@@ -1,5 +1,6 @@
 import { TimelineEngine, playbackStore, selectionStore, resolveTimeline } from '@elah/editor'
-import { applyOps, getTimeline } from '../src/host/applyOps.ts'
+import { applyOps, getTimeline, selectedPlannerClipIds } from '../src/host/applyOps.ts'
+import { commandStatusLine } from '../src/host/statusLine.ts'
 import { coerceOps, findSimilar } from '../src/sense/client.ts'
 import { timelineShortcut } from '../src/host/shortcuts.ts'
 
@@ -60,6 +61,64 @@ export async function runHostCases() {
     check(rejected && engine.getProject() === before, 'Invalid crossfade rollback')
   }
 
+  const rotated = coerceOps([{ op: 'set_transform', clip_id: a.id, rotation: 180 }])
+  check(rotated[0]?.op === 'set_transform' && rotated[0].rotation === 180, 'set_transform parses degrees')
+  await applyOps(engine, rotated, 'Rotate 180')
+  const upsideDown = engine.findClip(a.id)
+  check(upsideDown !== undefined, 'rotated clip stays on the timeline')
+  check(Math.abs((upsideDown.clip.transform?.rotation ?? 0) - Math.PI) < 1e-6, '180 degrees is pi radians')
+  const reported = getTimeline(engine).tracks.flatMap((track) => track.clips).find((clip) => clip.id === a.id)
+  check(reported?.rotation_deg === 180, 'snapshot reports 180 degrees')
+  check(engine.undo(), 'rotate undo')
+  check(Math.abs(engine.findClip(a.id)?.clip.transform?.rotation ?? 0) < 1e-6, 'one undo restores the angle')
+  check(engine.getProject().transitions.length === 1, 'rotate undo leaves the crossfade')
+  engine.redo()
+  await applyOps(engine, coerceOps([{ op: 'set_transform', clip_id: a.id, rotation: -35 }]), 'Rotate free')
+  const free = engine.findClip(a.id)?.clip.transform?.rotation ?? 99
+  check(Math.abs(free - (-35 * Math.PI / 180)) < 1e-6, 'free angle is radians')
+  check(getTimeline(engine).tracks.flatMap((track) => track.clips).find((clip) => clip.id === a.id)?.rotation_deg === -35, 'snapshot reports the free angle')
+  const beforeMissing = engine.getProject()
+  let rotateRejected = false
+  try {
+    await applyOps(engine, coerceOps([{ op: 'set_transform', clip_id: 'missing', rotation: 90 }]), 'Bad rotate')
+  } catch (error) {
+    rotateRejected = true
+    check(String(error).includes('Unknown clip'), 'missing rotate names the clip')
+    check(!String(error).includes('clip menu'), 'rotate is applied by the host')
+  }
+  check(rotateRejected && engine.getProject() === beforeMissing, 'failed rotate rolls back')
+  const selectionIds = selectedPlannerClipIds({
+    fps: 30,
+    stage: { width: 1080, height: 1920 },
+    duration_s: 1,
+    can_undo: false,
+    can_redo: false,
+    tracks: [{
+      alias: 'V1',
+      id: 'track',
+      name: 'V1',
+      kind: 'video',
+      clips: [{
+        id: 'engine-id',
+        alias: 'c1',
+        type: 'video',
+        name: 'A',
+        start_s: 0,
+        duration_s: 1,
+        in_s: 0,
+        volume: 1,
+        rotation_deg: 0,
+      }],
+    }],
+  }, ['engine-id', 'engine-id'])
+  check(selectionIds.length === 1 && selectionIds[0] === 'c1', 'selection uses the alias the planner sees')
+  check(commandStatusLine({
+    note: 'duration_s must be a number.',
+    planner: 'do',
+    ops: [],
+    hits: [{ id: 'leak' }],
+  }) === 'duration_s must be a number.', 'a failed edit status is the error')
+
   const section = document.createElement('section')
   section.className = 'timeline-pane'
   document.body.append(section)
@@ -97,5 +156,5 @@ export async function runHostCases() {
 
   const result = await findSimilar('upload/example.mp4', getTimeline(engine), [])
   check(result.note.includes('unavailable') && result.hits.length === 0, 'Upload fallback is explicit without a worker')
-  return 'Titles, rollback, undo/redo, crossfades, shortcuts and upload fallback passed'
+  return 'Titles, rollback, undo/redo, rotate, crossfades, shortcuts and upload fallback passed'
 }

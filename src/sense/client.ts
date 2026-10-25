@@ -36,6 +36,7 @@ export async function runCommand(
   command: string,
   timeline: TimelineSnapshot,
   library: readonly LibraryAsset[],
+  selectedClipIds: readonly string[] = [],
 ): Promise<CommandResult> {
   const response = await fetch('/api/v1/command', {
     method: 'POST',
@@ -44,6 +45,7 @@ export async function runCommand(
       command,
       timeline,
       library: library.map(toPayload),
+      selected_clip_ids: selectedClipIds,
     }),
     signal: AbortSignal.timeout(COMMAND_TIMEOUT_MS),
   })
@@ -200,6 +202,7 @@ const OP_NAMES = new Set([
   'move',
   'remove',
   'set_volume',
+  'set_transform',
   'update_text',
 ])
 
@@ -213,9 +216,6 @@ function coerceOp(raw: unknown, index: number): Op {
   if (!raw || typeof raw !== 'object') throw new Error(`Op ${index} is not an object.`)
   const row = raw as Record<string, unknown>
   const name = row.op
-  if (name === 'set_transform') {
-    throw new Error(`Op ${index}: rotate from the clip menu. set_transform is not applied by the host.`)
-  }
   if (typeof name !== 'string' || !OP_NAMES.has(name)) {
     throw new Error(`Op ${index} has an unknown type.`)
   }
@@ -286,6 +286,12 @@ function coerceOp(raw: unknown, index: number): Op {
         op: 'set_volume',
         clip_id: requiredString(row, 'clip_id'),
         volume: requiredNumber(row, 'volume'),
+      }
+    case 'set_transform':
+      return {
+        op: 'set_transform',
+        clip_id: requiredString(row, 'clip_id'),
+        rotation: requiredNumber(row, 'rotation'),
       }
     case 'update_text':
       return {

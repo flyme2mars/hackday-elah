@@ -13,7 +13,9 @@ import {
   createDefaultDemuxerFactory,
   framesToTimecode,
   playbackStore,
+  selectionStore,
   usePlaybackStore,
+  useSelectionStore,
   useTimelineEngine,
   useTracksStore,
   type InitialTrackConfig,
@@ -34,7 +36,6 @@ import {
   Search,
   RotateCcw,
 } from 'lucide-react'
-import { selectionStore, useSelectionStore } from '@elah/editor'
 import FloatingPanel, { type PanelAnchor } from './FloatingPanel.tsx'
 import TransitionPanel from './TransitionPanel.tsx'
 import { getSelectedClipIds } from './host/selection.ts'
@@ -45,6 +46,7 @@ import {
   applyOps,
   getTimeline,
   reconcileClipVaults,
+  selectedPlannerClipIds,
   vaultIdForClip,
 } from './host/applyOps.ts'
 import { canExportMp4, exportErrorLine, exportMp4 } from './host/exportMp4.ts'
@@ -222,13 +224,14 @@ function EditorShell() {
     setStatus('Searching…')
     try {
       const before = getTimeline(engine)
-      const result = await runCommand(text, before, listLibraryAssets())
-      if (result.hits.length > 0) setResults(result.hits)
+      const selected = selectedPlannerClipIds(before, getSelectedClipIds(engine))
+      const result = await runCommand(text, before, listLibraryAssets(), selected)
       if (result.ops.length > 0) {
         setStatus('Editing…')
         await applyOps(engine, result.ops, result.opsLabel)
         fitTimeline()
       }
+      setResults(result.hits.length > 0 ? result.hits : null)
       setCommand('')
       const removedTitle = result.ops.some(
         (op) =>
@@ -255,6 +258,7 @@ function EditorShell() {
         }),
       )
     } catch (error) {
+      setResults(null)
       setStatus(commandErrorLine(error))
     } finally {
       setBusy(false)
