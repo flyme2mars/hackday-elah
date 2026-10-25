@@ -35,11 +35,18 @@ Allowed ops (exact names):
 - {"op":"remove","clip_id":"..."}
 - {"op":"set_volume","clip_id":"...","volume":0.8}
 - {"op":"update_text","clip_id":"...","content":"Hi"}
+- {"op":"crossfade","from_clip_id":"...","to_clip_id":"...","duration_s":0.5}
 - {"op":"set_transform","clip_id":"...","rotation":180}
 
 set_transform rotation is degrees clockwise. 180 turns the picture upside down. Use it only when the user asked to rotate.
 
 When trimming to a new length, send duration_s only. Omit start_s unless the user asked to move the left edge.
+
+Titles and captions are text overlays on T1, not library media. Add them directly with add_text; no search is needed. For "add title Hello at the start for 2 seconds", use {"op":"add_text","clip_id":"title1","content":"Hello","track":"T1","start_s":0,"duration_s":2}.
+To change an existing title, use its id from the timeline with update_text. Supported fields are content, start_s, duration_s, font_size, color, x, y, background, background_opacity. Omit fields that should stay unchanged. Remove a title with remove and its clip_id. Do not create a replacement when asked to edit an existing title.
+Text start_s must be non-negative and duration_s positive. x and y are normalized stage coordinates from 0 to 1; defaults are x=0.5, y=0.18. font_size is positive pixels. background_opacity ranges from 0 to 1. Use readable monochrome text by default.
+
+For a crossfade or dissolve, use crossfade with the two existing adjacent video clip ids, in timeline order, on the same video track. duration_s defaults to 0.5 seconds. Do not move or trim the clips to create an overlap. Keep hard cuts unless a transition is requested.
 
 When the user asks to find footage, call search_vault and do not edit unless they also asked for an edit.
 
@@ -104,7 +111,7 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "apply_ops",
-        "description": "Queue timeline edits for the host. They run as one undo step after this command. Use op add_clip with track V1/V2/A1 and a real vault_id. Never invent op names.",
+        "description": "Queue timeline edits for the host as one undo step. Media uses add_clip with V1/V2/A1 and a real vault_id. Titles use add_text on T1 with content, start_s, duration_s; update_text changes content, timing or style by clip_id; remove deletes by clip_id. Never invent op names.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -873,6 +880,14 @@ def _validate_op(raw: object, allow: set[str]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise OpError("Each op must be an object.")
     name = raw.get("op")
+    if name == "crossfade":
+        op = {"op": "crossfade", "from_clip_id": _req_str(raw, "from_clip_id"), "to_clip_id": _req_str(raw, "to_clip_id")}
+        _copy_optional(raw, op, ("duration_s",), ())
+        if op.get("duration_s", 0.5) <= 0:
+            raise OpError("crossfade duration_s must be positive.")
+        if op["from_clip_id"] == op["to_clip_id"]:
+            raise OpError("crossfade needs two different clips.")
+        return op
     if name == "set_stage":
         return {"op": "set_stage", "width": _req_num(raw, "width"), "height": _req_num(raw, "height")}
     if name == "add_clip":
@@ -910,6 +925,7 @@ def _validate_op(raw: object, allow: set[str]) -> dict[str, Any]:
                 raise OpError("add_text track must be T1.")
             op["track"] = track
         _copy_optional(raw, op, ("x", "y", "font_size", "background_opacity"), ("clip_id", "name", "color", "background"))
+        _validate_text_fields(op)
         return op
     if name == "trim":
         op = {"op": "trim", "clip_id": _req_str(raw, "clip_id")}
@@ -942,11 +958,21 @@ def _validate_op(raw: object, allow: set[str]) -> dict[str, Any]:
         if "content" not in raw and isinstance(raw.get("text"), str):
             raw = {**raw, "content": raw["text"]}
         op = {"op": "update_text", "clip_id": _req_str(raw, "clip_id")}
-        _copy_optional(raw, op, ("font_size", "x", "y"), ("content", "color"))
+        _copy_optional(raw, op, ("start_s", "duration_s", "font_size", "x", "y", "background_opacity"), ("content", "color", "background"))
+        _validate_text_fields(op)
         if len(op) == 2:
             raise OpError("update_text needs a field to change.")
         return op
     raise OpError("Unknown op.")
+
+
+def _validate_text_fields(op: dict[str, Any]) -> None:
+    for key in ("start_s", "duration_s", "font_size"):
+        if key in op and (op[key] < 0 or (key != "start_s" and op[key] == 0)):
+            raise OpError(f"{key} must be {'non-negative' if key == 'start_s' else 'positive'}.")
+    for key in ("x", "y", "background_opacity"):
+        if key in op and not 0 <= op[key] <= 1:
+            raise OpError(f"{key} must be between 0 and 1.")
 
 
 def _copy_optional(raw: dict[str, Any], op: dict[str, Any], numbers: tuple[str, ...], strings: tuple[str, ...]) -> None:

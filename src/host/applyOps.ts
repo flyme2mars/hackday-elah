@@ -235,6 +235,7 @@ function applyOne(
       return
     }
     case 'add_text': {
+      validateTextFields(op, fps)
       if (op.content.trim() === '') throw new Error('add_text needs content')
       const trackAlias = op.track ?? 'T1'
       const trackId = resolveTrackId(engine, trackAlias)
@@ -242,6 +243,7 @@ function applyOne(
       if (track?.kind !== 'elements') {
         throw new Error(`add_text target ${trackAlias} is not an elements track`)
       }
+      if (engine.isTrackLocked(trackId)) throw new Error('The title track is locked')
       const transform: Transform = {
         x: op.x ?? 0.5,
         y: op.y ?? 0.18,
@@ -355,15 +357,29 @@ function applyOne(
       return
     }
     case 'update_text': {
+      validateTextFields(op, fps)
       const ref = resolveClip(engine, op.clip_id)
       const clip = mustClip(engine, ref.id)
       if (clip.type !== 'text') {
         throw new Error(`"${op.clip_id}" is a ${clip.type} clip, not text`)
       }
       const patch: Partial<Clip> = {}
+      if (engine.isTrackLocked(ref.trackId) || clip.locked) throw new Error('The title is locked')
       if (op.content !== undefined) patch.content = op.content
+      if (op.start_s !== undefined) patch.startFrame = secondsToFrameCount(op.start_s, fps)
+      if (op.duration_s !== undefined) {
+        patch.durationFrames = secondsToFrameCount(op.duration_s, fps)
+        patch.sourceDurationFrames = patch.durationFrames
+      }
       if (op.font_size !== undefined) patch.fontSize = op.font_size
       if (op.color !== undefined) patch.color = op.color
+      if (op.background !== undefined) {
+        patch.backgroundColor = op.background
+        patch.backgroundOpacity = op.background_opacity ?? clip.backgroundOpacity ?? 0.78
+        patch.padding = clip.padding ?? 18
+        patch.borderRadius = clip.borderRadius ?? 10
+      }
+      if (op.background_opacity !== undefined) patch.backgroundOpacity = op.background_opacity
       if (op.x !== undefined || op.y !== undefined) {
         const prev = clip.transform ?? {
           x: 0.5,
@@ -379,14 +395,67 @@ function applyOne(
         }
       }
       if (Object.keys(patch).length === 0) {
-        throw new Error('update_text needs content, font_size, color, x, or y')
+        throw new Error('update_text needs content, timing, or style')
       }
       engine.updateClip(ref.id, ref.trackId, patch)
+      return
+    }
+    case 'crossfade': {
+      const from = resolveClip(engine, op.from_clip_id)
+      const to = resolveClip(engine, op.to_clip_id)
+      const a = mustClip(engine, from.id)
+      const b = mustClip(engine, to.id)
+      if (a.type !== 'video' || b.type !== 'video' || from.trackId !== to.trackId || a.id === b.id) {
+        throw new Error('crossfade needs two video clips on the same track')
+      }
+      if (a.startFrame + a.durationFrames !== b.startFrame) {
+        throw new Error('crossfade needs adjacent clips in timeline order')
+      }
+      if (engine.isTrackLocked(from.trackId) || a.locked || b.locked) throw new Error('The clips are locked')
+      const seconds = op.duration_s ?? 0.5
+      if (!Number.isFinite(seconds) || seconds <= 0) throw new Error('crossfade duration must be positive')
+      // Elah centers transitions on the cut and rounds to an even frame count.
+      const frames = secondsToFrameCount(seconds, fps)
+      const durationFrames = Math.max(2, Math.floor(frames / 2) * 2)
+      if (durationFrames / 2 > Math.min(a.durationFrames, b.durationFrames)) {
+        throw new Error('crossfade is longer than the adjacent clips allow')
+      }
+      const existing = engine.getProject().transitions.filter((item) => item.fromClipId === a.id && item.toClipId === b.id)
+      const startFrame = b.startFrame - durationFrames / 2
+      if (engine.getProject().transitions.some((item) => item.trackId === from.trackId &&
+        !existing.some((match) => match.id === item.id) &&
+        item.startFrame < startFrame + durationFrames && item.startFrame + item.durationFrames > startFrame)) {
+        throw new Error('crossfade overlaps another transition')
+      }
+      for (const item of existing) engine.removeTransition(item.id)
+      const transition = engine.addTransition({
+        fromClipId: a.id, toClipId: b.id, trackId: from.trackId,
+        kind: 'fade', durationFrames, easing: 'linear',
+      })
+      if (!transition) throw new Error('crossfade could not be applied')
       return
     }
     default: {
       const unknown: never = op
       throw new Error(`Unknown op ${JSON.stringify(unknown)}`)
+    }
+  }
+}
+
+function validateTextFields(op: Extract<Op, { op: 'add_text' | 'update_text' }>, fps: number): void {
+  if (op.content !== undefined && !op.content.trim()) throw new Error('Text content must not be empty')
+  if (op.start_s !== undefined && (!Number.isFinite(op.start_s) || op.start_s < 0)) {
+    throw new Error('Text start must be non-negative')
+  }
+  if (op.duration_s !== undefined && (!Number.isFinite(op.duration_s) || op.duration_s <= 0 || secondsToFrameCount(op.duration_s, fps) < 1)) {
+    throw new Error('Text duration must cover at least one frame')
+  }
+  if (op.font_size !== undefined && (!Number.isFinite(op.font_size) || op.font_size <= 0)) {
+    throw new Error('font_size must be positive')
+  }
+  for (const value of [op.x, op.y, op.background_opacity]) {
+    if (value !== undefined && (!Number.isFinite(value) || value < 0 || value > 1)) {
+      throw new Error('Text position and background opacity must be between 0 and 1')
     }
   }
 }

@@ -2,7 +2,7 @@
 
 A monochrome browser video editor. The media library sits on the left. Preview and the elah timeline sit on the right, with one command field under the timeline. There is no chat transcript.
 
-Search, similar, frame grabs, and transcripts run in the sense worker. The planner tries Gemini API Gemma, then Vertex MaaS, then local Gemma E4B. Timeline edits come back as `ops`. The host applies them with `applyOps` into `TimelineEngine`. See [AGENTS.md](AGENTS.md) for the contract.
+Search, similar, frame grabs, and transcripts run in the sense worker. The planner tries DigitalOcean Gemma, then Gemini API Gemma, then Vertex MaaS, then local Gemma E4B. Timeline edits come back as `ops`. The host applies them with `applyOps` into `TimelineEngine`. See [AGENTS.md](AGENTS.md) for the contract.
 
 ## Run
 
@@ -17,7 +17,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r sense/requirements.txt
 
-# Optional Gemini primary. .gemini.env is gitignored.
+# Optional DigitalOcean first, then Gemini. Both env files are gitignored.
+set -a && source .do.env && set +a
 set -a && source .gemini.env && set +a
 
 export SENSE_VAULT="$HOME/HackDayVault"
@@ -46,7 +47,7 @@ Health check, once sense is up:
 curl -s http://127.0.0.1:8765/health
 ```
 
-Read `gemini_configured` (the key is not returned), `vertex_credentials`, `mlx_url`, `e4b_url`, `vault`, `vault_present`, `embeddings`, `npz_keys`, and `npz_error`.
+Read `do_configured`, `do_model`, `gemini_configured` (keys are not returned), `vertex_credentials`, `mlx_url`, `e4b_url`, `vault`, `vault_present`, `embeddings`, `npz_keys`, and `npz_error`.
 
 Vertex needs Application Default Credentials on the machine that runs the worker:
 
@@ -70,13 +71,61 @@ python -m unittest sense/test_local_plan.py
 
 `npm run build` is `tsc -b && vite build`.
 
+## Start the Mac stack
+
+After installing this repo's `.venv` and npm dependencies and the MLX checkout's
+`.venv`, run:
+
+```bash
+./scripts/demo-up.sh
+```
+
+The launcher uses `~/code/hackday-mlx/scripts/serve.sh` (or `start.sh`). If that
+checkout uses another command, set `SENSE_MLX_START_CMD` to its server command.
+Set `SENSE_MLX_DIR`, `SENSE_MLX_PYTHON`, or `SENSE_PYTHON` to override the checkout
+or interpreters. The MLX command runs from its checkout with its venv on `PATH`
+and must serve `/health` on port 8787.
+
+It loads the local, gitignored `.gemini.env`, waits for MLX, Sense and Vite,
+prints Sense health and the editor URL, and stays in the foreground. Ctrl-C
+stops the processes it started. Missing dependencies, occupied ports and startup
+timeouts fail explicitly; logs go into a temporary directory printed at startup.
+`DEMO_START_TIMEOUT` sets the per-service timeout in seconds (default 120).
+
+## Titles, transitions and keys
+
+Use commands such as `add title Hello at the start for 2 seconds`,
+`change the title to Welcome and make it 3 seconds`, or `remove the title`.
+Titles use T1 and support content, timing, position, font size, text color and
+background. Each command is one undo step. A planner must be available.
+
+For two adjacent video clips on the same track, ask `crossfade the first two
+clips for 0.5 seconds`. Omitting duration uses 0.5 seconds, rounded to Elah's
+even frame count. Clip timing stays unchanged; cuts remain hard until requested.
+
+With Preview or Timeline focused: Space toggles playback; J/L or Left/Right
+step one frame; Shift with those keys steps one second; Delete/Backspace removes
+selected clips. Nudging pauses playback and stays within the project. Typing in
+the command field and editing controls keeps their normal behavior.
+
+Verify with `npm run build`, `npm run lint`, and
+`python3 -m unittest discover -s sense -p 'test_*.py'`.
+With Vite running, `node tests/browser.mjs` runs browser regression checks
+(install Chromium with `npx playwright install chromium`, or set `CHROME_PATH`).
+With the three service ports free,
+`python3 -m unittest discover -s tests -p 'test_*.py'` checks launcher supervision
+using local HTTP stand-ins. Run the launcher on the Mac to verify the real models.
+
 ## What a command does
 
 The field sends the text, the current timeline, and the visible library to `POST /v1/command`. The worker may call `search_vault`, `similar`, `get_frame`, `transcribe`, `get_timeline`, and `apply_ops`.
 
 Sense tools run in the worker. `apply_ops` comes back to the browser and is applied as one undo step. The media panel refills with classified hits. A status line reports search or edit, then clears when the line is "Done". Planner-offline, timeout, and export failures stay on that line.
 
-Right-click a clip and choose Find similar. That calls `POST /similar` with the clip's library id. Clips that were not placed from the library have no id.
+Right-click a clip and choose Find similar. Vault clips call `POST /similar`
+with their library id. Browser uploads show an explicit unavailable message:
+the existing MLX media embed endpoint needs a file on disk. They do not produce
+fabricated similarity scores. Clips without a library id report that status.
 
 Drag a hit onto a compatible track, or click it to place it at the playhead. Video tries V1, then V2. Audio goes to A1. Images use elah's media drop on a picture track.
 
@@ -116,7 +165,8 @@ Seconds in, frames at the edge: `Math.round(seconds * fps)`. Track names are V1,
 | `move` | `moveClip` |
 | `remove` | `removeClip` |
 | `set_volume` | `updateClip({ volume })`, clip gain 0 to 1 |
-| `update_text` | flat `content`, `fontSize`, `color` |
+| `update_text` | flat content/style fields and optional start/duration |
+| `crossfade` | `addTransition({ kind: 'fade' })` between adjacent video clips |
 
 `clip_id` is a host alias so later ops can name a clip created in the same batch. `vault_id` must already be on the timeline or returned by search or similar. The planner may also emit `set_transform` with `rotation` in degrees. The host rejects that op, and the status line says to rotate from the clip menu. Elah stores `transform.rotation` in radians.
 
@@ -136,6 +186,7 @@ This tree can run the UI and the worker without the models. These still have to 
 
 - `~/code/hackday-mlx` must serve EmbeddingGemma, Parakeet, and Gemma E4B, phase-swapping one model at a time. Confirm the HTTP paths or set `SENSE_MLX_EMBED_URL`, `SENSE_MLX_MEDIA_EMBED_URL`, `SENSE_MLX_TRANSCRIBE_URL`, and `SENSE_E4B_URL`.
 - `~/HackDayVault` must contain the real media and, if you built one, `vault_index_*.json` and `vault_index_*.npz`. If `/health` shows `embeddings: mismatch`, the npz keys are not the ones listed in `sense/README.md`.
-- `.gemini.env` (gitignored) may set `GEMINI_API_KEY` for the primary planner. `GET /health` reports `gemini_configured` and does not echo the key.
+- `.do.env` (gitignored) may set `DO_MODEL_KEY` for the first planner. `GET /health` reports `do_configured` and `do_model` and does not echo the key.
+- `.gemini.env` (gitignored) may set `GEMINI_API_KEY`. `GET /health` reports `gemini_configured` and does not echo the key.
 - `gcloud auth application-default login` for project `hackathon1-512618` before Vertex `gemma-4-26b-a4b-it-maas` will answer. Location is `global`.
 - MP4 export needs desktop Chromium. A headless encoder may reject AAC.

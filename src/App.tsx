@@ -27,6 +27,7 @@ import {
   setClipRotation,
   wrapDegrees,
 } from './host/rotate.ts'
+import { timelineShortcut } from './host/shortcuts.ts'
 import { FPS } from './host/types.ts'
 import { commandErrorLine, commandStatusLine, findSimilar, loadLibrary, runCommand, similarErrorLine } from './sense/client.ts'
 
@@ -68,6 +69,11 @@ function EditorShell() {
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
   const [menu, setMenu] = useState<{ x: number; y: number; clipId: string } | null>(null)
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => timelineShortcut(engine, event)
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [engine])
   useEffect(() => {
     let live = true
     void loadLibrary().then((items) => {
@@ -157,7 +163,8 @@ function EditorShell() {
     setBusy(true)
     setStatus('Searching…')
     try {
-      const result = await runCommand(text, getTimeline(engine), listLibraryAssets())
+      const before = getTimeline(engine)
+      const result = await runCommand(text, before, listLibraryAssets())
       if (result.hits.length > 0) setResults(result.hits)
       if (result.ops.length > 0) {
         setStatus('Editing…')
@@ -165,7 +172,15 @@ function EditorShell() {
         fitTimeline()
       }
       setCommand('')
-      setStatus(commandStatusLine(result))
+      const removedTitle = result.ops.some((op) => op.op === 'remove' && before.tracks.some((track) =>
+        track.clips.some((clip) => clip.type === 'text' && (clip.id === op.clip_id || clip.alias === op.clip_id))))
+      const titleStatus = result.ops.some((op) => op.op === 'add_text') ? 'Title added.'
+        : result.ops.some((op) => op.op === 'update_text') ? 'Title updated.'
+        : removedTitle ? 'Title removed.' : ''
+      setStatus(commandStatusLine({
+        ...result,
+        note: [titleStatus, result.note].filter(Boolean).join(' '),
+      }))
     } catch (error) {
       setStatus(commandErrorLine(error))
     } finally {
@@ -226,7 +241,12 @@ function EditorShell() {
   }
 
   return (
-    <div className="elah-root shell">
+    <div className="elah-root shell" onKeyDown={(event) => {
+      // Preserve native control keys before Elah's global timeline listener.
+      if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, button, a, [contenteditable]')) {
+        event.stopPropagation()
+      }
+    }}>
       <MediaPanel
         library={library}
         results={results}
@@ -236,7 +256,7 @@ function EditorShell() {
         onPrepare={(asset) => void ensureImported(asset)}
         onUpload={(files) => void onUpload(files)}
       />
-      <section className="stage" aria-label="Preview">
+      <section className="stage" aria-label="Preview" tabIndex={0}>
         <header className="stage-bar">
           <Transport />
           <div className="stage-actions">
@@ -250,7 +270,7 @@ function EditorShell() {
           </PreviewBoundary>
         </div>
       </section>
-      <section className="timeline-pane" aria-label="Timeline" onContextMenuCapture={onTimelineContextMenu}>
+      <section className="timeline-pane" aria-label="Timeline" tabIndex={0} onContextMenuCapture={onTimelineContextMenu}>
         <Timeline ref={timelineRef} fps={FPS} sidebarWidth={188} style={{ height: 248 }} />
         {menu && (
           <ClipMenu
