@@ -53,7 +53,6 @@ import { canExportMp4, exportErrorLine, exportMp4 } from './host/exportMp4.ts'
 import { clipStatus } from './host/statusLine.ts'
 import {
   listLibraryAssets,
-  registerAssets,
   type LibraryAsset,
 } from './host/library.ts'
 import { ensureImported, importLocalFiles } from './host/media.ts'
@@ -71,7 +70,6 @@ import {
   commandErrorLine,
   commandStatusLine,
   findSimilar,
-  loadLibrary,
   runCommand,
   similarErrorLine,
 } from './sense/client.ts'
@@ -109,7 +107,6 @@ function EditorShell() {
   usePreviewOverlayBounds(previewRef)
   const clips = useTracksStore((state) => state.clips)
   const [library, setLibrary] = useState<LibraryAsset[]>([])
-  const [libraryReady, setLibraryReady] = useState(false)
   const [results, setResults] = useState<LibraryAsset[] | null>(null)
   const [readyIds, setReadyIds] = useState<Map<string, string>>(() => new Map())
   const readyRef = useRef<Map<string, string>>(new Map())
@@ -134,19 +131,6 @@ function EditorShell() {
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [engine])
-  useEffect(() => {
-    let live = true
-    void loadLibrary().then((items) => {
-      if (!live) return
-      registerAssets(items)
-      setLibrary(items)
-      setLibraryReady(true)
-    })
-    return () => {
-      live = false
-    }
-  }, [])
-
   useEffect(() => {
     reconcileClipVaults(engine)
   }, [clips, engine])
@@ -413,13 +397,11 @@ function EditorShell() {
           <span className="brand-mark">
             <Scissors size={17} strokeWidth={1.5} />
           </span>
-          <span>
-            ELAH<span className="brand-detail">EDITOR</span>
-          </span>
+          <span>Frame Flow</span>
         </div>
         <div className="project-name">
           <span className="project-dot" />
-          Untitled sequence
+          Untitled
         </div>
         <div className="app-actions">
           <span className="project-format">
@@ -431,7 +413,6 @@ function EditorShell() {
       <MediaPanel
         library={library}
         results={results}
-        libraryReady={libraryReady}
         readyIds={readyIds}
         onPlace={(asset) => void onPlace(asset)}
         onPrepare={(asset) => void ensureImported(asset)}
@@ -466,7 +447,7 @@ function EditorShell() {
           <span className="transport-format">SEQUENCE</span>
           <Transport />
           <span className="transport-format">
-            {totalFrames > 0 ? `${(totalFrames / FPS).toFixed(1)}s` : '—'}
+            {totalFrames > 0 ? `${(totalFrames / FPS).toFixed(1)}s` : '0.0s'}
           </span>
         </div>
       </section>

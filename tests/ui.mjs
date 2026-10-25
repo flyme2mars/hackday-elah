@@ -19,20 +19,74 @@ try {
   const errors = []
   page.on('pageerror', (error) => errors.push(error.message))
   let ops = []
+  let hits = {}
   await page.route('**/api/library', (route) =>
-    route.fulfill({ json: { items: [] } }),
+    route.fulfill({
+      json: {
+        items: [
+          {
+            vault_id: 'flower.mp4',
+            name: 'Flower',
+            kind: 'video',
+            duration_s: 5,
+            src: '/samples/flower.mp4',
+          },
+          {
+            vault_id: 'bunny.mp4',
+            name: 'Bunny',
+            kind: 'video',
+            duration_s: 8,
+            src: '/samples/bunny.mp4',
+          },
+          {
+            vault_id: 'bed.m4a',
+            name: 'Bed',
+            kind: 'audio',
+            duration_s: 8,
+            src: '/samples/bed.m4a',
+          },
+        ],
+      },
+    }),
   )
   await page.route('**/api/v1/command', (route) =>
-    route.fulfill({ json: { ops, planner: 'test', hits: {}, note: '' } }),
+    route.fulfill({ json: { ops, planner: 'test', hits, note: '' } }),
   )
   await page.goto(process.env.TEST_BASE_URL || 'http://127.0.0.1:43123')
-  await page.getByRole('button', { name: /^Flower/ }).waitFor()
+  await page.getByText('Your library is empty', { exact: true }).waitFor()
+  await page.getByText('Frame Flow', { exact: true }).waitFor()
+  assert.equal(await page.locator('.project-name').innerText(), 'Untitled')
+  assert.equal(await page.title(), 'Frame Flow')
+  assert.equal(await page.getByRole('button', { name: /^Flower/ }).count(), 0)
+  assert.equal(await page.getByRole('button', { name: /^Bunny/ }).count(), 0)
+  assert.equal(await page.getByRole('button', { name: /^Bed/ }).count(), 0)
+  assert.equal(await page.getByText('ELAH', { exact: true }).count(), 0)
+  assert.equal(await page.getByText('Untitled sequence', { exact: true }).count(), 0)
+  assert.equal(await page.getByText('—').count(), 0)
   await page
     .getByText('Add media to the timeline to begin.', { exact: true })
     .waitFor()
   await mkdir('docs/screenshots', { recursive: true })
   await page.screenshot({ path: 'docs/screenshots/editor-empty.png' })
   const input = page.getByRole('textbox', { name: 'Agent command' })
+  hits = {
+    video: [
+      {
+        vault_id: 'flower.mp4',
+        name: 'Flower',
+        kind: 'video',
+        duration_s: 5,
+        src: '/samples/flower.mp4',
+      },
+      {
+        vault_id: 'bunny.mp4',
+        name: 'Bunny',
+        kind: 'video',
+        duration_s: 8,
+        src: '/samples/bunny.mp4',
+      },
+    ],
+  }
   ops = [
     {
       op: 'add_clip',

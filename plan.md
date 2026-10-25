@@ -1,4 +1,6 @@
-# Hack Day Kochi 2026 — Team Ares plan
+# Frame Flow
+
+Hack Day Kochi 2026, Team Ares. The GitHub repo slug stays `hackday-elah`.
 
 **Repo:** [flyme2mars/hackday-elah](https://github.com/flyme2mars/hackday-elah) (MIT)  
 **Local clone:** `~/code/projects/hackday-elah` on Mac (user `apple`)  
@@ -10,7 +12,7 @@
 
 ## 1. What we are building
 
-A monochrome browser video editor where a **single agent command field** (not a chat) drives vault search, find-similar, and timeline edits. Preview + elah timeline sit on the right. Media library (Video / Audio / Image) sits on the left.
+Frame Flow is a monochrome browser video editor where a **single agent command field** (not a chat) drives vault search, find-similar, and timeline edits. Preview and the timeline sit on the right. The media library (Video / Audio / Image) sits on the left. The panel starts empty.
 
 Natural language like “trim this clip to 2 seconds” or “find clips like this beach shot” becomes tool calls. The planner prefers **DigitalOcean Gemma 4**, then Gemini, then Vertex, then **local Gemma E4B** on the Mac so the demo never dies on rate limits.
 
@@ -77,7 +79,7 @@ Timeline edits return as `ops` and are applied in the browser via `applyOps` int
 | `sense/app.py` | FastAPI routes |
 | `sense/planner.py` | Gemma tool loop + fallbacks |
 | `sense/catalog.py`, `retrieve.py` | Vault index + search |
-| `public/samples/` | Fallback Flower / Bunny / Bed when vault empty |
+| `public/samples/` | Flower / Bunny / Bed for the worker when the vault is empty. The panel does not show them on boot. |
 | `.env.example` | Documented env vars (no secrets committed) |
 | `.gemini.env` | **Local only, gitignored.** Never commit. |
 | `.do.env` | **Local only, gitignored.** `DO_MODEL_KEY`. Never commit. |

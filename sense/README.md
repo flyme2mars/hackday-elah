@@ -68,7 +68,7 @@ If those routes differ in the MLX repo, point the env vars at the real ones. A m
 - Otherwise the worker scans media files and uses the path relative to the vault as the id.
 - Embeddings, when the npz lines up with those ids, rank search and similar. The query vector still has to come from the MLX embed route.
 
-When the vault folder is missing or empty, the editor shows `public/samples` (Flower, Bunny, Bed). Those ids are the filenames. They are not mixed into a non-empty vault.
+When the vault folder is missing or empty, search can still return `public/samples` (Flower, Bunny, Bed). Those ids are the filenames. They are not mixed into a non-empty vault. The Media panel does not list them on boot.
 
 ## HTTP
 

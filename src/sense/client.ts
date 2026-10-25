@@ -1,5 +1,4 @@
 import { registerAssets, type LibraryAsset, type LibraryKind } from '../host/library.ts'
-import { fallbackLibrary } from '../host/samples.ts'
 import { failureStatusLine, isFetchFailure } from '../host/statusLine.ts'
 import type { Op, TimelineSnapshot } from '../host/types.ts'
 
@@ -17,20 +16,7 @@ export interface CommandResult {
   opsLabel: string
 }
 
-const LIBRARY_TIMEOUT_MS = 2500
 const COMMAND_TIMEOUT_MS = 120_000
-
-export async function loadLibrary(): Promise<LibraryAsset[]> {
-  try {
-    const response = await fetch('/api/library', { signal: AbortSignal.timeout(LIBRARY_TIMEOUT_MS) })
-    if (!response.ok) return fallbackLibrary()
-    const body: unknown = await response.json()
-    const items = parseAssetList(readItems(body))
-    return items.length > 0 ? items : fallbackLibrary()
-  } catch {
-    return fallbackLibrary()
-  }
-}
 
 export async function runCommand(
   command: string,
@@ -132,12 +118,6 @@ function noteFrom(body: Record<string, unknown>): string {
   if (typeof body.note === 'string' && body.note.trim()) return body.note.trim()
   if (typeof body.detail === 'string' && body.detail.trim()) return body.detail.trim()
   return ''
-}
-
-function readItems(body: unknown): unknown[] {
-  if (!body || typeof body !== 'object') return []
-  const items = (body as { items?: unknown }).items
-  return Array.isArray(items) ? items : []
 }
 
 function flattenHits(body: Record<string, unknown>): LibraryAsset[] {
